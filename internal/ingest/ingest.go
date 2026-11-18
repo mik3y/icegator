@@ -45,6 +45,9 @@ type Server struct {
 	// ReadyAfter is how much audio a DJ must send before they can go on
 	// air. Default 3s.
 	ReadyAfter time.Duration
+	// OnSession, if set, is called with each new session before any audio
+	// is read from it; the level meter attaches here.
+	OnSession func(*session.Session)
 	// IdleTimeout disconnects a DJ who stops sending. Default 15s.
 	IdleTimeout time.Duration
 }
@@ -185,6 +188,9 @@ func (s *Server) source(conn net.Conn, br *bufio.Reader, req *request, ip string
 	sess := session.New(id, conn.RemoteAddr().String(), req.header.Get("User-Agent"), conn)
 	sess.ReadyAfter = s.ReadyAfter
 
+	if s.OnSession != nil {
+		s.OnSession(sess)
+	}
 	s.Gate.Add(sess)
 	defer s.Gate.Remove(sess)
 	err := sess.Run(&idleReader{conn: conn, r: body, timeout: s.IdleTimeout})

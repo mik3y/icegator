@@ -27,6 +27,18 @@ metadata:
   # Shown when the DJ's software sends no track titles.
   fallback: "{dj}"
 
+# Who may sign in to the dashboard. Without any, the dashboard is not served.
+# Make a hash with: icegator -hash-password
+operators:
+  - username: admin
+    password_hash: "$2a$10$replace.this.with.a.real.hash"
+
+# Loudness (dBFS, averaged over a few seconds) behind the dashboard's
+# low / good / high verdict on each DJ's stream.
+levels:
+  low_dbfs: -24
+  high_dbfs: -5
+
 # --- With `auth: local`, replace the upstream block and list your DJs: ---
 #
 # upstream:

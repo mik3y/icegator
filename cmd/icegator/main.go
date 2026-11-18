@@ -3,21 +3,28 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/splatboard/icegator/internal/api"
 	"github.com/splatboard/icegator/internal/auth"
 	"github.com/splatboard/icegator/internal/config"
 	"github.com/splatboard/icegator/internal/controller"
 	"github.com/splatboard/icegator/internal/ingest"
+	"github.com/splatboard/icegator/internal/levels"
 	"github.com/splatboard/icegator/internal/session"
 	"github.com/splatboard/icegator/internal/upstream"
 )
@@ -25,7 +32,24 @@ import (
 func main() {
 	configPath := flag.String("config", "icegator.yaml", "path to the configuration file")
 	newKey := flag.Bool("new-key", false, "print a new DJ stream key and exit")
+	hashPassword := flag.Bool("hash-password", false, "read an operator password from stdin, print its hash for the config, and exit")
 	flag.Parse()
+
+	if *hashPassword {
+		pw, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		pw = strings.TrimRight(pw, "\r\n")
+		if len(pw) < 8 {
+			fmt.Fprintln(os.Stderr, "password must be at least 8 characters")
+			os.Exit(1)
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(string(hash))
+		return
+	}
 
 	if *newKey {
 		fmt.Println(auth.NewKey())
@@ -77,7 +101,17 @@ func run(configPath string, log *slog.Logger) error {
 		opt.OnAccepted, opt.OnRejected = f.Confirm, f.Reject
 		authn = f
 	}
+	dash := &api.Server{
+		Info:      api.Info{Station: cfg.Station.Name, Mode: "standalone", Auth: cfg.Auth, Policy: cfg.Handoff.Policy},
+		Operators: map[string]string{},
+		Log:       log,
+	}
+	for _, op := range cfg.Operators {
+		dash.Operators[op.Username] = op.PasswordHash
+	}
+	opt.OnChange = dash.Changed
 	ctl = controller.New(opt)
+	dash.Gate = ctl
 
 	ln, err := net.Listen("tcp", cfg.Listen.Ingest)
 	if err != nil {
@@ -86,9 +120,24 @@ func run(configPath string, log *slog.Logger) error {
 	log.Info("icegator started", "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
 		"auth", cfg.Auth, "policy", cfg.Handoff.Policy)
 
-	srv := &ingest.Server{Auth: authn, Gate: ctl, Log: log, ReadyAfter: cfg.Handoff.ReadyAfter}
-	errc := make(chan error, 1)
+	thresholds := levels.Thresholds{Silent: cfg.Levels.SilentDBFS, Low: cfg.Levels.LowDBFS, High: cfg.Levels.HighDBFS}
+	srv := &ingest.Server{
+		Auth: authn, Gate: ctl, Log: log, ReadyAfter: cfg.Handoff.ReadyAfter,
+		OnSession: func(s *session.Session) { go levels.Meter(s, thresholds) },
+	}
+	errc := make(chan error, 2)
 	go func() { errc <- srv.Serve(ln) }()
+
+	if len(cfg.Operators) == 0 {
+		log.Warn("no operators configured; the dashboard is not being served")
+	} else {
+		dln, err := net.Listen("tcp", cfg.Listen.Dashboard)
+		if err != nil {
+			return err
+		}
+		log.Info("dashboard listening", "addr", dln.Addr().String())
+		go func() { errc <- http.Serve(dln, dash) }()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

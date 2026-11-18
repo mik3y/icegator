@@ -437,6 +437,8 @@ type DJ struct {
 	ConnectedAt time.Time     `json:"connected_at"`
 	Title       string        `json:"title"`
 	Stats       session.Stats `json:"stats"`
+	// Level is the latest meter reading, or nil if there is none yet.
+	Level *session.Level `json:"level"`
 }
 
 // Status is a snapshot of the whole gate.
@@ -466,7 +468,7 @@ func (c *Controller) Status() Status {
 		d := DJ{
 			SessionID: e.s.ID, Username: e.s.DJ.Username, Name: e.s.DJ.DisplayName(),
 			Verified: e.s.Verified(), Remote: e.s.Remote, UserAgent: e.s.UserAgent,
-			ConnectedAt: e.s.ConnectedAt, Title: e.s.Title(), Stats: e.s.Stats(),
+			ConnectedAt: e.s.ConnectedAt, Title: e.s.Title(), Stats: e.s.Stats(), Level: e.s.Level.Load(),
 		}
 		switch {
 		case e == c.onAir:
@@ -547,4 +549,17 @@ func remoteIP(addr string) string {
 		}
 	}
 	return addr
+}
+
+// Levels returns the latest meter reading for every session that has one.
+func (c *Controller) Levels() map[string]*session.Level {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := make(map[string]*session.Level, len(c.entries))
+	for _, e := range c.entries {
+		if l := e.s.Level.Load(); l != nil {
+			m[e.s.ID] = l
+		}
+	}
+	return m
 }

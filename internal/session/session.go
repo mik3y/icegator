@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/splatboard/icegator/internal/mp3"
@@ -46,6 +47,9 @@ type Session struct {
 	ReadyAfter time.Duration
 	// OnReady is called once, from the reading goroutine.
 	OnReady func()
+
+	// Level is the most recent meter reading, or nil before the first.
+	Level atomic.Pointer[Level]
 
 	closer io.Closer
 
@@ -237,4 +241,24 @@ func (s *Session) Stats() Stats {
 		st.AvgBitrate = int(float64(s.bytes) * 8 / s.audio.Seconds())
 	}
 	return st
+}
+
+// Level is a meter reading, in dBFS (0 is full scale; silence is -120).
+type Level struct {
+	// RMS and Peak are per channel (left, right) over the last quarter of
+	// a second.
+	RMS  [2]float64 `json:"rms"`
+	Peak [2]float64 `json:"peak"`
+	// Loudness is the RMS of both channels over the last few seconds; it
+	// is what Verdict is judged on.
+	Loudness float64 `json:"loudness"`
+	// Verdict is "silent", "low", "good" or "high".
+	Verdict string `json:"verdict"`
+}
+
+// Subscribers is the number of active subscriptions.
+func (s *Session) Subscribers() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subs)
 }

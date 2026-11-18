@@ -24,6 +24,10 @@ type Config struct {
 	Handoff  Handoff  `yaml:"handoff"`
 	Metadata Metadata `yaml:"metadata"`
 	DJs      []DJ     `yaml:"djs"`
+	// Operators may sign in to the dashboard. With none listed, the
+	// dashboard is not served.
+	Operators []Operator `yaml:"operators"`
+	Levels    Levels     `yaml:"levels"`
 	// StateDir holds what must survive a restart. Default "./state".
 	StateDir string `yaml:"state_dir"`
 }
@@ -68,6 +72,20 @@ type DJ struct {
 	Slug string `yaml:"slug"`
 	Name string `yaml:"name"`
 	Key  string `yaml:"key"`
+}
+
+type Operator struct {
+	Username string `yaml:"username"`
+	// PasswordHash is a bcrypt hash; make one with `icegator -hash-password`.
+	PasswordHash string `yaml:"password_hash"`
+}
+
+// Levels are the loudness thresholds (dBFS, RMS over a few seconds) behind
+// the dashboard's low / good / high verdict. Zero means the default.
+type Levels struct {
+	SilentDBFS float64 `yaml:"silent_dbfs"` // default -60
+	LowDBFS    float64 `yaml:"low_dbfs"`    // default -24
+	HighDBFS   float64 `yaml:"high_dbfs"`   // default -5
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -155,6 +173,21 @@ func (c *Config) validate() error {
 		}
 	default:
 		bad("auth must be \"forward\" or \"local\", not %q", c.Auth)
+	}
+	seen := map[string]bool{}
+	for _, op := range c.Operators {
+		switch {
+		case op.Username == "":
+			bad("an operator has no username")
+		case seen[op.Username]:
+			bad("operator %q is listed twice", op.Username)
+		case !strings.HasPrefix(op.PasswordHash, "$2"):
+			bad("operator %q: password_hash must be a bcrypt hash (make one with: icegator -hash-password)", op.Username)
+		}
+		seen[op.Username] = true
+	}
+	if l := c.Levels; l.SilentDBFS > 0 || l.LowDBFS > 0 || l.HighDBFS > 0 {
+		bad("levels thresholds are dBFS values and must be negative")
 	}
 	if p := c.Handoff.Policy; p != "auto" && p != "manual" {
 		bad("handoff.policy must be \"auto\" or \"manual\", not %q", p)
