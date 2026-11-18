@@ -1,0 +1,10 @@
+.env
+.env.*
+.venv/
+/bin/
+/dist/
+/testdata/tmp/
+node_modules/
+web/dist/
+*.spool
+.DS_Store

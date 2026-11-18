@@ -1,0 +1,46 @@
+name: icegator
+
+dependencies:
+  - python@3.14
+  - python-dev
+  - go@1.27
+  - bun@1.4.4
+  - uv
+  - git
+  - node@22
+  - uv:pre-commit
+
+grants:
+  - claude
+  - github
+
+volumes:
+  - name: venv
+    target: /workspace/.venv
+  - name: uv-cache
+    target: /home/moatuser/.cache/uv
+  # Background job registry; transcripts already persist via the claude grant.
+  - name: claude-jobs
+    target: /home/moatuser/.claude/jobs
+
+language_servers:
+  - python
+  - typescript
+
+mounts:
+  - ../streamlover:/streamlover
+
+hooks:
+  # Playwright's Chromium and its system libraries, so the agent can drive
+  # dev pages headlessly (e.g. screenshot /dev/tv-presets/). The version must
+  # match `playwright` in package.json; bump both together.
+  post_build_root: apt-get update -qq && apt-get install -y -qq tmux libpq-dev pkg-config default-libmysqlclient-dev build-essential libcairo2-dev && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.65.0 install --with-deps chromium && chmod -R a+rX /opt/ms-playwright
+  # pre_run: uv sync && bun install --frozen-lockfile
+
+network:
+  policy: permissive
+  # host:
+  #   - 3306    # MySQL (DATABASE_URL)
+  #   - 6379    # Redis (REDIS_URL)
+  #   - 9000    # dev host vite
+  #   - 9001    # dev host django
