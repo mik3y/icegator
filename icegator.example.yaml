@@ -1,5 +1,7 @@
 # Icegator configuration. Copy to icegator.yaml and edit.
-# "${NAME}" is replaced by that environment variable.
+# "${NAME}" is replaced by that environment variable. Variables can be kept
+# in a file named .env.local or .env beside this one, which Icegator reads
+# at startup. One already set in the environment takes precedence.
 
 station:
   name: Example Radio

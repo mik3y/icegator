@@ -35,6 +35,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "icegator.yaml", "path to the configuration file")
+	envFile := flag.String("env-file", "", "read environment variables from this file, instead of .env.local and .env beside the config")
 	newKey := flag.Bool("new-key", false, "print a new DJ stream key and exit")
 	hashPassword := flag.Bool("hash-password", false, "read an operator password from stdin, print its hash for the config, and exit")
 	flag.Parse()
@@ -60,13 +61,20 @@ func main() {
 		return
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(*configPath, log); err != nil {
+	if err := run(*configPath, *envFile, log); err != nil {
 		log.Error("exiting", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string, log *slog.Logger) error {
+func run(configPath, envFile string, log *slog.Logger) error {
+	envFiles, err := config.LoadEnv(configPath, envFile)
+	if err != nil {
+		return fmt.Errorf("reading environment file: %w", err)
+	}
+	if len(envFiles) > 0 {
+		log.Info("read environment files", "files", strings.Join(envFiles, ", "))
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
