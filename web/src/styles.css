@@ -1,0 +1,489 @@
+/*
+ * The console borrows from broadcast equipment. Surfaces are the cool grey
+ * of a mixing desk, and colour is reserved for signal. Tally red means on
+ * air and appears nowhere else. Cue blue marks the next action. The meter
+ * colours are the usual green, amber and red of a level display.
+ */
+:root {
+  color-scheme: light dark;
+  --desk: #e6e9ee;
+  --panel: #fbfcfd;
+  --ink: #1b2430;
+  --ink-soft: #55606e;
+  --rule: #c9cfd8;
+  --well: #dde1e7;
+  --tally: #e5322d;
+  --cue: #2f6bde;
+  --cue-ink: #ffffff;
+  --good: #2e9e5b;
+  --warm: #b98500;
+  --hot: #d42b26;
+  --meter-good: #2e9e5b;
+  --meter-warm: #e0a100;
+  --meter-hot: #e5322d;
+  --radius: 6px;
+  font-family: "Archivo Variable", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --desk: #161b22;
+    --panel: #1f2630;
+    --ink: #e8ecf1;
+    --ink-soft: #9aa5b4;
+    --rule: #33404f;
+    --well: #2a3441;
+    --tally: #ff5a52;
+    --cue: #6c9bff;
+    --cue-ink: #0d1420;
+    --good: #4cc27d;
+    --warm: #f2b93b;
+    --hot: #ff5a52;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--desk);
+  color: var(--ink);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+.soft {
+  color: var(--ink-soft);
+}
+
+.small {
+  font-size: 0.875rem;
+}
+
+/* Buttons */
+
+button {
+  font: inherit;
+  font-weight: 650;
+  font-size: 0.9375rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--ink-soft);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--cue);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--cue);
+  border-color: var(--cue);
+  color: var(--cue-ink);
+}
+
+button.large {
+  font-size: 1.0625rem;
+  padding: 0.75rem 1.5rem;
+}
+
+button.quiet {
+  border-color: transparent;
+  color: var(--ink-soft);
+  padding-inline: 0.5rem;
+}
+
+button.quiet:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+/* Page frame */
+
+.page {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 4rem;
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.5rem 1.25rem;
+}
+
+.masthead h2 {
+  font-size: 1.125rem;
+  font-weight: 650;
+  font-stretch: 108%;
+}
+
+.masthead .who {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.notice {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--warm);
+  margin-bottom: 1rem;
+}
+
+.notice.error {
+  border-color: var(--hot);
+}
+
+/* The on-air strip */
+
+.strip {
+  background: var(--panel);
+  border-radius: var(--radius);
+  border-left: 8px solid var(--rule);
+  padding: 1.5rem 1.75rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.strip.live {
+  border-left-color: var(--tally);
+}
+
+.strip.trouble {
+  border-left-color: var(--meter-warm);
+}
+
+.tally {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+}
+
+.lamp {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 50%;
+  background: var(--rule);
+}
+
+.live .lamp {
+  background: var(--tally);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tally) 25%, transparent);
+}
+
+.trouble .lamp {
+  background: var(--meter-warm);
+}
+
+.strip h1 {
+  font-size: clamp(2rem, 6vw, 3rem);
+  font-weight: 700;
+  font-stretch: 112%;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.strip .title {
+  font-size: 1.125rem;
+  margin-top: 0.375rem;
+}
+
+.strip-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 2rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.facts div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.facts dt {
+  color: var(--ink-soft);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Handoff */
+
+.handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  padding: 1.25rem 0 0.25rem;
+}
+
+/* Lists of DJs who are not on air */
+
+.group {
+  margin-top: 2rem;
+}
+
+.group > h2 {
+  font-size: 1rem;
+  font-weight: 650;
+  padding-bottom: 0.5rem;
+  border-bottom: 1.5px solid var(--rule);
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 2ch minmax(8rem, 1.2fr) minmax(9rem, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.row .place {
+  font-weight: 650;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.row .name {
+  font-weight: 650;
+  font-size: 1.0625rem;
+  overflow-wrap: anywhere;
+}
+
+.flag {
+  display: inline-block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--warm);
+  margin-left: 0.5rem;
+}
+
+@media (max-width: 40rem) {
+  .row {
+    grid-template-columns: 2ch 1fr;
+  }
+  .row .level,
+  .row .actions {
+    grid-column: 2;
+  }
+}
+
+.empty {
+  padding: 1rem 0;
+  max-width: 34rem;
+}
+
+/* Meters */
+
+.meter {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.meter.large {
+  gap: 0.375rem;
+}
+
+.channel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.channel > span {
+  width: 1ch;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+
+.bar {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--well);
+  overflow: hidden;
+}
+
+.large .bar {
+  height: 18px;
+}
+
+/* The fill is one fixed gradient revealed from the left, so a given colour
+   always sits at the same level whatever the reading. The stops match the
+   scale in Meter.tsx, where -12 dB is at 77.8% and -5 dB at 90.7%. */
+.fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--meter-good) 0%,
+    var(--meter-good) 77.8%,
+    var(--meter-warm) 90.7%,
+    var(--meter-hot) 100%
+  );
+  /* A reading arrives every 250ms, and the bar takes that long to reach
+     it, so it moves steadily and does not jump. */
+  transition: clip-path 250ms linear;
+}
+
+.peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+  transition: left 250ms linear;
+}
+
+.scale {
+  position: relative;
+  height: 1.125rem;
+  margin-left: calc(1ch + 0.5rem);
+  font-size: 0.6875rem;
+  color: var(--ink-soft);
+}
+
+.scale span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.scale span:last-child {
+  transform: translateX(-100%);
+}
+
+.verdict {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.verdict b {
+  font-weight: 650;
+}
+
+.verdict .good {
+  color: var(--good);
+}
+
+.verdict .low {
+  color: var(--warm);
+}
+
+.verdict .high {
+  color: var(--hot);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill,
+  .peak {
+    transition: none;
+  }
+}
+
+/* Sign in */
+
+.signin {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.signin form {
+  width: 100%;
+  max-width: 23rem;
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 2rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.signin h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-stretch: 112%;
+}
+
+.signin label {
+  display: grid;
+  gap: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.signin input {
+  font: inherit;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--rule);
+  background: var(--desk);
+  color: var(--ink);
+}
+
+/* Messages that appear after an action fails */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--desk);
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--radius);
+  max-width: calc(100vw - 2rem);
+}

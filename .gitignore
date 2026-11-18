@@ -5,6 +5,7 @@
 /dist/
 /testdata/tmp/
 node_modules/
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 *.spool
 .DS_Store

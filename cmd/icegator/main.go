@@ -27,6 +27,7 @@ import (
 	"github.com/splatboard/icegator/internal/levels"
 	"github.com/splatboard/icegator/internal/session"
 	"github.com/splatboard/icegator/internal/upstream"
+	"github.com/splatboard/icegator/web"
 )
 
 func main() {
@@ -104,6 +105,7 @@ func run(configPath string, log *slog.Logger) error {
 	dash := &api.Server{
 		Info:      api.Info{Station: cfg.Station.Name, Mode: "standalone", Auth: cfg.Auth, Policy: cfg.Handoff.Policy},
 		Operators: map[string]string{},
+		Web:       web.App(),
 		Log:       log,
 	}
 	for _, op := range cfg.Operators {
@@ -136,6 +138,9 @@ func run(configPath string, log *slog.Logger) error {
 			return err
 		}
 		log.Info("dashboard listening", "addr", dln.Addr().String())
+		if dash.Web == nil {
+			log.Warn("this binary was built without the dashboard app, so only its API is served; build with `make`")
+		}
 		go func() { errc <- http.Serve(dln, dash) }()
 	}
 

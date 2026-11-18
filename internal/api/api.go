@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -299,8 +300,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, _ string) {
 	}
 }
 
-// spa serves the built web app, falling back to index.html for paths that
-// are client-side routes rather than files.
+// spa serves the built web app. A path that is not a file in it is treated
+// as a client-side route and gets index.html, unless it looks like a file
+// request, which gets a 404 so that a missing asset fails loudly.
 func spa(web fs.FS) http.Handler {
 	files := http.FileServerFS(web)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -308,10 +310,15 @@ func spa(web fs.FS) http.Handler {
 		if p == "" {
 			p = "index.html"
 		}
-		if _, err := fs.Stat(web, p); err != nil {
+		switch _, err := fs.Stat(web, p); {
+		case err != nil && (strings.HasPrefix(p, "assets/") || path.Ext(p) != ""):
+			http.NotFound(w, r)
+			return
+		case err != nil:
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
-		} else if strings.HasPrefix(p, "assets/") {
+		case strings.HasPrefix(p, "assets/"):
+			// Built asset names contain a content hash.
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		files.ServeHTTP(w, r)
