@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/splatboard/icegator/internal/controller"
 	"github.com/splatboard/icegator/internal/ingest"
 	"github.com/splatboard/icegator/internal/mp3"
+	"github.com/splatboard/icegator/internal/session"
 	"github.com/splatboard/icegator/internal/upstream"
 	"github.com/splatboard/icegator/internal/upstreamtest"
 )
@@ -37,6 +39,7 @@ type rigOpt struct {
 	forward bool
 	policy  controller.Policy
 	checker auth.Checker // overrides the real station check
+	record  func(session.Identity, string) (controller.Recording, error)
 }
 
 var stationAccounts = map[string]string{"icegator": "shared-pw", "alice": "alice-pw", "bob": "bob-pw"}
@@ -56,6 +59,7 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	opt := controller.Options{
 		Upstream: up, Account: upstream.Credentials{Username: "icegator", Password: "shared-pw"},
 		Policy: o.policy, Log: log, RetryDelay: 20 * time.Millisecond,
+		Record: o.record,
 	}
 	var a auth.Authenticator
 	var ctl *controller.Controller
@@ -537,5 +541,97 @@ func TestForwardUnverified(t *testing.T) {
 		if d.Username == "alice" && !d.Verified {
 			t.Fatal("alice should be remembered as verified")
 		}
+	}
+}
+
+// tape is an in-memory recording.
+type tape struct {
+	mu     sync.Mutex
+	dj     string
+	data   []byte
+	titles []string
+	gaps   int
+	closed bool
+}
+
+func (t *tape) Write(f []byte) { t.mu.Lock(); t.data = append(t.data, f...); t.mu.Unlock() }
+func (t *tape) Title(s string) { t.mu.Lock(); t.titles = append(t.titles, s); t.mu.Unlock() }
+func (t *tape) Gap()           { t.mu.Lock(); t.gaps++; t.mu.Unlock() }
+func (t *tape) Close()         { t.mu.Lock(); t.closed = true; t.mu.Unlock() }
+func (t *tape) snapshot() (data []byte, titles []string, gaps int, closed bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]byte(nil), t.data...), append([]string(nil), t.titles...), t.gaps, t.closed
+}
+
+func TestRecordingMatchesWhatAired(t *testing.T) {
+	var mu sync.Mutex
+	var tapes []*tape
+	r := newRig(t, rigOpt{record: func(dj session.Identity, _ string) (controller.Recording, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		tp := &tape{dj: dj.Username}
+		tapes = append(tapes, tp)
+		return tp, nil
+	}})
+	get := func(i int) *tape {
+		mu.Lock()
+		defer mu.Unlock()
+		if i < len(tapes) {
+			return tapes[i]
+		}
+		return nil
+	}
+
+	alice := r.put("alice", "AAAA-2222")
+	first := r.waitLive(1)
+	r.title("alice", "AAAA-2222", "Song One")
+	r.waitTitle(upstreamtest.Title{Username: "icegator", Song: "Song One"})
+	if !r.ctl.Status().Recording {
+		t.Fatal("status does not say the turn is being recorded")
+	}
+
+	// Bob waits in the queue. Nothing of his is recorded until he is on air.
+	bob := r.put("bob", "BBBB-3333")
+	r.waitState("bob", controller.StateQueued)
+	if get(1) != nil {
+		t.Fatal("a recording was started for a DJ who is not on air")
+	}
+
+	// The station drops alice's connection. Her recording carries on in
+	// the same file, with the break marked.
+	r.station.Kick()
+	second := r.waitLive(2)
+	alice.hangUp()
+	r.waitFor("alice's recording to close", func() bool { _, _, _, closed := get(0).snapshot(); return closed })
+
+	data, titles, gaps, _ := get(0).snapshot()
+	if gaps != 1 {
+		t.Fatalf("%d gaps marked, want 1", gaps)
+	}
+	// The title is sent again when the station connection is re-opened.
+	if strings.Join(titles, "|") != "Alice|Song One|Song One" {
+		t.Fatalf("titles %v", titles)
+	}
+	// What was recorded is what the station got, frame for frame. The
+	// station may be missing the tail of a write that was in flight when
+	// each connection ended, so it is compared as a prefix.
+	r.waitFor("both station connections to end", func() bool { return first.Ended() && second.Ended() })
+	a, b := first.Bytes(), second.Bytes()
+	if !bytes.HasPrefix(data, a[:max(0, len(a)-2000)]) {
+		t.Fatal("the recording does not begin with what the station received first")
+	}
+	if !bytes.Contains(data, b[:max(0, len(b)-2000)]) {
+		t.Fatal("the recording does not contain what the station received after the drop")
+	}
+	assertPassthrough(t, data)
+
+	// Bob's turn is a separate recording.
+	r.waitLive(3)
+	r.waitFor("bob's recording to start", func() bool { return get(1) != nil })
+	bob.hangUp()
+	r.waitFor("bob's recording to close", func() bool { _, _, _, closed := get(1).snapshot(); return closed })
+	if get(1).dj != "bob" {
+		t.Fatalf("second recording belongs to %q", get(1).dj)
 	}
 }

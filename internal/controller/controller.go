@@ -63,12 +63,24 @@ type Options struct {
 	// credentials. Optional.
 	OnAccepted func(upstream.Credentials)
 	OnRejected func(upstream.Credentials)
+	// Record, if set, starts a recording for a DJ who has gone on air.
+	Record func(dj session.Identity, sessionID string) (Recording, error)
 	// OnChange is called (without locks held) whenever state changes.
 	OnChange func()
 	Log      *slog.Logger
 	// RetryDelay is the first wait after a failed upstream connect; it
 	// doubles up to 8x. Default 1s.
 	RetryDelay time.Duration
+}
+
+// Recording receives a copy of what one DJ's turn on air sent to the
+// station.
+type Recording interface {
+	Write(frame []byte)
+	Title(title string)
+	// Gap marks a point where the station connection dropped.
+	Gap()
+	Close()
 }
 
 type entry struct {
@@ -80,6 +92,7 @@ type entry struct {
 	linkErr   string
 	liveSince time.Time
 	title     string // last title sent upstream
+	recording bool
 }
 
 // Controller is safe for concurrent use.
@@ -267,7 +280,7 @@ func (c *Controller) switchTo(e *entry) {
 	}
 	if c.onAir != nil {
 		c.opt.Log.Info("off air", "dj", c.onAir.s.DJ.Username, "session", c.onAir.s.ID)
-		c.onAir.link, c.onAir.linkErr, c.onAir.title = "", "", ""
+		c.onAir.link, c.onAir.linkErr, c.onAir.title, c.onAir.recording = "", "", "", false
 	}
 	c.onAir = e
 	if e == nil {
@@ -311,6 +324,12 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 	forwarded := e.s.DJ.Upstream != nil
 	delay := c.opt.RetryDelay
 	log := c.opt.Log.With("dj", e.s.DJ.Username, "session", e.s.ID)
+	var rec Recording
+	defer func() {
+		if rec != nil {
+			rec.Close()
+		}
+	}()
 
 	for ctx.Err() == nil {
 		conn, err := c.opt.Upstream.Connect(ctx, creds, upstream.Info{Name: e.s.DJ.DisplayName()})
@@ -349,8 +368,22 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 			}
 		}
 		log.Info("station connection live")
+		switch {
+		case rec != nil:
+			rec.Gap()
+		case c.opt.Record != nil:
+			// Started only now, so that a DJ the station refuses
+			// leaves no recording behind.
+			if rec, err = c.opt.Record(e.s.DJ, e.s.ID); err != nil {
+				log.Error("recording could not be started", "err", err)
+				rec = nil
+			}
+			c.mu.Lock()
+			e.recording = rec != nil && c.onAir == e
+			c.mu.Unlock()
+		}
 		c.setLink(e, "live", "")
-		ended := c.pump(ctx, e, conn, creds)
+		ended := c.pump(ctx, e, conn, creds, rec)
 		conn.Close()
 		if ended {
 			return
@@ -362,7 +395,7 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 
 // pump copies frames to conn. It returns true when there is nothing more
 // to do (ctx cancelled or the session ended), false to reconnect.
-func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, creds upstream.Credentials) bool {
+func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, creds upstream.Credentials, rec Recording) bool {
 	// About 13 seconds of slack at 26ms a frame before we are cut off.
 	sub := e.s.Subscribe(512)
 	defer sub.Close()
@@ -377,6 +410,9 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 		c.mu.Unlock()
 		if same {
 			return
+		}
+		if rec != nil {
+			rec.Title(title)
 		}
 		go func() {
 			tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -414,6 +450,9 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 			}
 			if err := conn.Write(frame); err != nil {
 				return false
+			}
+			if rec != nil {
+				rec.Write(frame)
 			}
 		}
 	}
@@ -453,6 +492,8 @@ type Status struct {
 	LiveSince *time.Time `json:"live_since,omitempty"`
 	// Title is what the station is currently showing for the live DJ.
 	Title string `json:"title,omitempty"`
+	// Recording reports whether the live DJ's turn is being recorded.
+	Recording bool `json:"recording"`
 }
 
 func (c *Controller) Status() Status {
@@ -490,7 +531,7 @@ func (c *Controller) Status() Status {
 		st.DJs[i] = d
 	}
 	if e := c.onAir; e != nil {
-		st.OnAir, st.Link, st.LinkError, st.Title = e.s.ID, e.link, e.linkErr, e.title
+		st.OnAir, st.Link, st.LinkError, st.Title, st.Recording = e.s.ID, e.link, e.linkErr, e.title, e.recording
 		if e.link == "live" {
 			t := e.liveSince
 			st.LiveSince = &t
@@ -562,4 +603,17 @@ func (c *Controller) Levels() map[string]*session.Level {
 		}
 	}
 	return m
+}
+
+// Shutdown takes whoever is on air off and waits for their station
+// connection and recording to be closed.
+func (c *Controller) Shutdown() {
+	c.mu.Lock()
+	c.switchTo(nil)
+	done := c.done
+	c.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
 }

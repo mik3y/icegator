@@ -102,6 +102,9 @@ func run(configPath string, log *slog.Logger) error {
 		opt.OnAccepted, opt.OnRejected = f.Confirm, f.Reject
 		authn = f
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dash := &api.Server{
 		Info:      api.Info{Station: cfg.Station.Name, Mode: "standalone", Auth: cfg.Auth, Policy: cfg.Handoff.Policy},
 		Operators: map[string]string{},
@@ -144,12 +147,13 @@ func run(configPath string, log *slog.Logger) error {
 		go func() { errc <- http.Serve(dln, dash) }()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
 		ln.Close()
+		// Disconnecting the DJs ends their turns, which closes any
+		// recording in progress so that it is uploaded on the next start.
+		ctl.Shutdown()
 		return nil
 	case err := <-errc:
 		if errors.Is(err, net.ErrClosed) {

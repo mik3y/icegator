@@ -48,6 +48,7 @@ export interface Status {
   link_error?: string;
   live_since?: string;
   title?: string;
+  recording: boolean;
 }
 
 export class ApiError extends Error {

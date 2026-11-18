@@ -9,3 +9,4 @@ web/dist/*
 !web/dist/.gitkeep
 *.spool
 .DS_Store
+/state/

@@ -10,10 +10,12 @@ function Facts({
   dj,
   now,
   liveSince,
+  recording,
 }: {
   dj: Dj;
   now: number;
   liveSince?: string;
+  recording?: boolean;
 }) {
   return (
     <dl className="facts">
@@ -35,6 +37,12 @@ function Facts({
         <dt>From</dt>
         <dd>{host(dj.remote)}</dd>
       </div>
+      {recording && (
+        <div>
+          <dt>Recording</dt>
+          <dd>On</dd>
+        </div>
+      )}
     </dl>
   );
 }
