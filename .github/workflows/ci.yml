@@ -1,0 +1,95 @@
+# Continuous integration. Three jobs, which between them run everything
+# `make test` and `make` do.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same pull request supersedes a run still in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Check that go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Vet
+        run: go vet ./...
+      # The race detector matters here. The gate is a set of goroutines
+      # passing audio between connections.
+      - name: Test
+        run: go test -race ./...
+
+  web:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Build
+        run: bun run build
+
+  build:
+    # The released artifact is one binary with the dashboard inside it, so
+    # make sure the two still go together.
+    name: Build the binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Build
+        run: make
+      - name: Check that the dashboard is in the binary
+        run: |
+          cat > ci.yaml <<'YAML'
+          upstream: {url: "http://127.0.0.1:1/"}
+          listen: {ingest: "127.0.0.1:18000", dashboard: "127.0.0.1:18080"}
+          operators:
+            - {username: ci, password_hash: "$2a$10$abcdefghijklmnopqrstuuJ1cQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0"}
+          YAML
+          bin/icegator -config ci.yaml &
+          sleep 2
+          curl --fail --silent http://127.0.0.1:18080/ | grep -q '<div id="app">'
