@@ -28,7 +28,7 @@ type Gate interface {
 	Status() controller.Status
 	Levels() map[string]*session.Level
 	Handoff() bool
-	Air(sessionID string) error
+	Air(sessionID, showID string) error
 	Pull(sessionID string) error
 	Kick(sessionID string) error
 }
@@ -243,7 +243,13 @@ func (s *Server) sessionAction(w http.ResponseWriter, r *http.Request, op string
 	var err error
 	switch action {
 	case "air":
-		err = s.Gate.Air(id)
+		// The body is optional. It may name a show for the DJ to
+		// broadcast as when they are being put on air off-schedule.
+		var req struct {
+			ShowID string `json:"show_id"`
+		}
+		json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
+		err = s.Gate.Air(id, req.ShowID)
 	case "pull":
 		err = s.Gate.Pull(id)
 	case "kick":

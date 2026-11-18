@@ -22,7 +22,7 @@ import (
 	"github.com/splatboard/icegator/internal/controller"
 	"github.com/splatboard/icegator/internal/ingest"
 	"github.com/splatboard/icegator/internal/mp3"
-	"github.com/splatboard/icegator/internal/session"
+	"github.com/splatboard/icegator/internal/schedule"
 	"github.com/splatboard/icegator/internal/upstream"
 	"github.com/splatboard/icegator/internal/upstreamtest"
 )
@@ -37,9 +37,15 @@ type rig struct {
 
 type rigOpt struct {
 	forward bool
-	policy  controller.Policy
 	checker auth.Checker // overrides the real station check
-	record  func(session.Identity, string) (controller.Recording, error)
+	record  func(controller.Turn) (controller.Recording, error)
+
+	// Setting schedule switches the controller to following a programme.
+	schedule schedule.Source
+	policy   controller.Policy
+	overrun  controller.Overrun
+	now      func() time.Time
+	onEvent  func(controller.Event)
 }
 
 var stationAccounts = map[string]string{"icegator": "shared-pw", "alice": "alice-pw", "bob": "bob-pw"}
@@ -58,8 +64,18 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	opt := controller.Options{
 		Upstream: up, Account: upstream.Credentials{Username: "icegator", Password: "shared-pw"},
-		Policy: o.policy, Log: log, RetryDelay: 20 * time.Millisecond,
-		Record: o.record,
+		Log: log, RetryDelay: 20 * time.Millisecond,
+		Record:   o.record,
+		Schedule: o.schedule, Policy: o.policy, Now: o.now, OnEvent: o.onEvent,
+		Overrun: o.overrun,
+	}
+	if o.schedule != nil {
+		opt.FallbackTitle = func(t controller.Turn) string {
+			if t.Show == nil {
+				return t.DJ.DisplayName()
+			}
+			return t.Show.Name + " with " + t.DJ.DisplayName()
+		}
 	}
 	var a auth.Authenticator
 	var ctl *controller.Controller
@@ -78,6 +94,7 @@ func newRig(t *testing.T, o rigOpt) *rig {
 		a, err = auth.NewLocal([]auth.DJ{
 			{Slug: "alice", Name: "Alice", Key: "AAAA-2222"},
 			{Slug: "bob", Name: "Bob", Key: "BBBB-3333"},
+			{Slug: "carol", Name: "Carol", Key: "CCCC-4444"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -415,7 +432,7 @@ func TestManualHandoffAndOperatorActions(t *testing.T) {
 	// An operator can put a held DJ back.
 	for _, d := range r.ctl.Status().DJs {
 		if d.Username == "alice" {
-			if err := r.ctl.Air(d.SessionID); err != nil {
+			if err := r.ctl.Air(d.SessionID, ""); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -567,10 +584,10 @@ func (t *tape) snapshot() (data []byte, titles []string, gaps int, closed bool) 
 func TestRecordingMatchesWhatAired(t *testing.T) {
 	var mu sync.Mutex
 	var tapes []*tape
-	r := newRig(t, rigOpt{record: func(dj session.Identity, _ string) (controller.Recording, error) {
+	r := newRig(t, rigOpt{record: func(turn controller.Turn) (controller.Recording, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		tp := &tape{dj: dj.Username}
+		tp := &tape{dj: turn.DJ.Username}
 		tapes = append(tapes, tp)
 		return tp, nil
 	}})

@@ -74,11 +74,17 @@ func run(configPath string, log *slog.Logger) error {
 	}
 
 	opt := controller.Options{
-		Upstream:      up,
-		Account:       upstream.Credentials{Username: cfg.Upstream.Username, Password: cfg.Upstream.Password},
-		Policy:        controller.Policy(cfg.Handoff.Policy),
-		FallbackTitle: func(id session.Identity) string { return cfg.FallbackTitle(id.DisplayName()) },
-		Log:           log,
+		Upstream: up,
+		Account:  upstream.Credentials{Username: cfg.Upstream.Username, Password: cfg.Upstream.Password},
+		Policy:   controller.Policy(cfg.Handoff.Policy),
+		FallbackTitle: func(t controller.Turn) string {
+			show := ""
+			if t.Show != nil {
+				show = t.Show.Name
+			}
+			return cfg.FallbackTitle(t.DJ.DisplayName(), show)
+		},
+		Log: log,
 	}
 	var authn auth.Authenticator
 	var ctl *controller.Controller
@@ -117,6 +123,7 @@ func run(configPath string, log *slog.Logger) error {
 	opt.OnChange = dash.Changed
 	ctl = controller.New(opt)
 	dash.Gate = ctl
+	go ctl.Run(ctx)
 
 	ln, err := net.Listen("tcp", cfg.Listen.Ingest)
 	if err != nil {

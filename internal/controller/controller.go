@@ -1,18 +1,22 @@
 // Package controller owns the answer to "who is on air". Every connected
-// DJ is registered here; the controller decides which one's frames go to
+// DJ is registered here. The controller decides which one's frames go to
 // the station and runs the upstream connection for them.
 //
-// This file implements standalone (queue) mode, in which the first ready
-// DJ is on air and the rest wait their turn.
+// It works in one of two ways. With no schedule it is a queue, in which the
+// first ready DJ is on air and the rest wait their turn (queue.go). With a
+// schedule, the DJ on air is whoever the programme says (scheduled.go).
+// Everything else, including how a DJ's frames reach the station, is shared.
 package controller
 
 import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/splatboard/icegator/internal/schedule"
 	"github.com/splatboard/icegator/internal/session"
 	"github.com/splatboard/icegator/internal/upstream"
 )
@@ -22,7 +26,7 @@ type State string
 
 const (
 	StateConnecting State = "connecting" // connected, not enough audio yet
-	StateQueued     State = "queued"     // ready, waiting their turn
+	StateQueued     State = "queued"     // ready, and not on air
 	StateOnAir      State = "on_air"
 	StateHeld       State = "held" // taken off air; needs an operator to return
 )
@@ -47,32 +51,6 @@ type Upstream interface {
 	SetTitle(ctx context.Context, creds upstream.Credentials, title string) error
 }
 
-// Options configure a Controller.
-type Options struct {
-	Upstream Upstream
-	// Account is the station login used for DJs whose own credentials are
-	// not forwarded.
-	Account upstream.Credentials
-
-	// Policy says whether a DJ with a claim to the air takes it by
-	// themselves or waits for an operator. Default PolicyManual.
-	Policy Policy
-	// FallbackTitle gives the title to show when the DJ has sent none.
-	FallbackTitle func(session.Identity) string
-	// OnAccepted and OnRejected report how the station treated forwarded
-	// credentials. Optional.
-	OnAccepted func(upstream.Credentials)
-	OnRejected func(upstream.Credentials)
-	// Record, if set, starts a recording for a DJ who has gone on air.
-	Record func(dj session.Identity, sessionID string) (Recording, error)
-	// OnChange is called (without locks held) whenever state changes.
-	OnChange func()
-	Log      *slog.Logger
-	// RetryDelay is the first wait after a failed upstream connect; it
-	// doubles up to 8x. Default 1s.
-	RetryDelay time.Duration
-}
-
 // Recording receives a copy of what one DJ's turn on air sent to the
 // station.
 type Recording interface {
@@ -83,12 +61,84 @@ type Recording interface {
 	Close()
 }
 
+// Turn describes one stretch on air. A DJ who stays on across the boundary
+// between two of their own shows has two turns.
+type Turn struct {
+	// ID is unique to the turn.
+	ID string
+	DJ session.Identity
+	// SessionID is the DJ connection the turn belongs to.
+	SessionID string
+	// Show is what is being broadcast. It is nil when there is no
+	// schedule, and when an operator put the DJ on air without naming one.
+	Show *schedule.Show
+	// Slot is the scheduled slot being filled, or nil if the turn is not
+	// on the schedule.
+	Slot *schedule.Slot
+	// Forced reports that an operator put the DJ on air off-schedule.
+	Forced bool
+
+	// overrides is the slot whose ready DJ the operator passed over when
+	// forcing this turn, if there was one. See settleScheduled.
+	overrides string
+}
+
+// Event is something that happened on air, for whoever keeps the record.
+type Event struct {
+	Kind string // "on_air", "off_air" or "track"
+	At   time.Time
+	Turn Turn
+	// Title is the track title, for "track" events.
+	Title string
+}
+
+// Options configure a Controller.
+type Options struct {
+	Upstream Upstream
+	// Account is the station login used for DJs whose own credentials are
+	// not forwarded.
+	Account upstream.Credentials
+
+	// Policy says whether a DJ with a claim to the air takes it by
+	// themselves or waits for an operator. Default PolicyManual in a queue and PolicyAuto with a schedule.
+	Policy Policy
+
+	// Schedule switches the controller to following a programme. The
+	// remaining fields in this group apply only then. See scheduled.go.
+	Schedule schedule.Source
+	// Overrun says how long a DJ may stay on air past the end of their
+	// slot. The zero value allows none.
+	Overrun Overrun
+
+	// FallbackTitle gives the title to show when the DJ has sent none.
+	FallbackTitle func(Turn) string
+	// Record, if set, starts a recording for a turn.
+	Record func(Turn) (Recording, error)
+	// OnEvent, if set, is told when turns start and end and tracks change.
+	OnEvent func(Event)
+	// OnAccepted and OnRejected report how the station treated forwarded
+	// credentials. Optional.
+	OnAccepted func(upstream.Credentials)
+	OnRejected func(upstream.Credentials)
+	// OnChange is called (without locks held) whenever state changes.
+	OnChange func()
+	Log      *slog.Logger
+	// RetryDelay is the first wait after a failed upstream connect. It
+	// doubles up to 8x. Default 1s.
+	RetryDelay time.Duration
+	// Now is the clock. Default time.Now.
+	Now func() time.Time
+}
+
 type entry struct {
 	s    *session.Session
 	held bool
 
-	// Set while this entry is on air; guarded by Controller.mu.
-	link      string // "connecting" | "live" | "retrying"
+	// The rest is meaningful while this entry is on air, and is guarded
+	// by Controller.mu.
+	turn      Turn
+	rebind    chan struct{} // tells the air goroutine that turn has changed
+	link      string        // "connecting" | "live" | "retrying"
 	linkErr   string
 	liveSince time.Time
 	title     string // last title sent upstream
@@ -104,11 +154,17 @@ type Controller struct {
 	onAir   *entry
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when the current air goroutine has exited
+	turns   int
 }
 
 func New(opt Options) *Controller {
 	if opt.Policy == "" {
+		// A queue has no way to know that the DJ on air is finished, so
+		// it waits to be told. A schedule says when each DJ is due.
 		opt.Policy = PolicyManual
+		if opt.Schedule != nil {
+			opt.Policy = PolicyAuto
+		}
 	}
 	if opt.Log == nil {
 		opt.Log = slog.Default()
@@ -116,18 +172,63 @@ func New(opt Options) *Controller {
 	if opt.RetryDelay == 0 {
 		opt.RetryDelay = time.Second
 	}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
 	if opt.FallbackTitle == nil {
-		opt.FallbackTitle = func(id session.Identity) string { return id.DisplayName() }
+		opt.FallbackTitle = func(t Turn) string { return t.DJ.DisplayName() }
 	}
 	done := make(chan struct{})
 	close(done)
 	return &Controller{opt: opt, done: done}
 }
 
+// Run re-examines the schedule once a second until ctx is cancelled, so
+// that slot boundaries take effect on time. Without a schedule there is
+// nothing to do and it returns at once.
+func (c *Controller) Run(ctx context.Context) {
+	if c.opt.Schedule == nil {
+		return
+	}
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			c.Tick()
+		}
+	}
+}
+
+// Tick re-examines who should be on air. Run calls it on a timer, and tests
+// call it after moving the clock.
+func (c *Controller) Tick() {
+	c.mu.Lock()
+	before := c.onAir
+	c.settle()
+	changed := c.onAir != before
+	c.mu.Unlock()
+	if changed {
+		c.changed()
+	}
+}
+
+// settle puts the right DJ on air for the current state of things. Call
+// with mu held.
+func (c *Controller) settle() {
+	if c.opt.Schedule != nil {
+		c.settleScheduled()
+	} else {
+		c.settleQueue()
+	}
+}
+
 // Add registers a newly connected session. The caller must call Remove
 // when the session ends.
 func (c *Controller) Add(s *session.Session) {
-	e := &entry{s: s}
+	e := &entry{s: s, rebind: make(chan struct{}, 1)}
 	s.OnReady = func() { c.ready(e) }
 	c.mu.Lock()
 	c.entries = append(c.entries, e)
@@ -143,12 +244,12 @@ func (c *Controller) Remove(s *session.Session) {
 		if e.s == s {
 			c.entries = append(c.entries[:i], c.entries[i+1:]...)
 			if c.onAir == e {
-				c.switchTo(nil)
+				c.switchTo(nil, Turn{})
 			}
 			break
 		}
 	}
-	c.fill()
+	c.settle()
 	c.mu.Unlock()
 	c.opt.Log.Info("dj disconnected", "dj", s.DJ.Username, "session", s.ID)
 	c.changed()
@@ -156,34 +257,54 @@ func (c *Controller) Remove(s *session.Session) {
 
 func (c *Controller) ready(e *entry) {
 	c.mu.Lock()
-	if c.opt.Policy == PolicyAuto && c.onAir != nil && c.onAir != e && e.s.Verified() && !e.held {
-		c.onAir.held = true
-		c.switchTo(e)
+	if c.opt.Schedule == nil {
+		c.readyQueue(e)
 	}
-	c.fill()
+	c.settle()
 	c.mu.Unlock()
 	c.changed()
 }
 
-// Handoff takes the current DJ off air and puts the next in the queue on.
-// It reports false, changing nothing, if nobody is waiting.
+// Handoff takes the current DJ off air and puts on whoever is due next. It
+// reports false, changing nothing, if nobody is.
 func (c *Controller) Handoff() bool {
 	c.mu.Lock()
 	defer c.changed()
 	defer c.mu.Unlock()
-	next := c.next()
+	next, turn := c.handoffTarget()
 	if next == nil {
 		return false
 	}
-	if c.onAir != nil {
+	if c.onAir != nil && c.opt.Schedule == nil {
+		// In a queue, the DJ who was handed off would otherwise be
+		// first in line again.
 		c.onAir.held = true
 	}
-	c.switchTo(next)
+	c.switchTo(next, turn)
 	return true
 }
 
+// handoffTarget is who a handoff would put on air, with the turn they
+// would get. Call with mu held.
+func (c *Controller) handoffTarget() (*entry, Turn) {
+	if c.opt.Schedule != nil {
+		slot := c.currentSlot()
+		if e := c.candidate(slot); e != nil {
+			return e, c.scheduledTurn(e, slot)
+		}
+		return nil, Turn{}
+	}
+	if e := c.nextInQueue(); e != nil {
+		return e, c.newTurn(e)
+	}
+	return nil, Turn{}
+}
+
 // Air puts a specific session on air now, displacing whoever is there.
-func (c *Controller) Air(sessionID string) error {
+// With a schedule this is how an operator puts a DJ on off-schedule, and
+// showID may name one of that DJ's shows to broadcast as. An empty showID
+// puts them on air with no show, which is neither recorded nor reported.
+func (c *Controller) Air(sessionID, showID string) error {
 	c.mu.Lock()
 	defer c.changed()
 	defer c.mu.Unlock()
@@ -193,19 +314,42 @@ func (c *Controller) Air(sessionID string) error {
 		return errors.New("no such session")
 	case !e.s.Ready():
 		return errors.New("session is not sending audio yet")
-	case c.onAir == e:
+	case c.onAir == e && showID == "":
 		return nil
 	}
-	if c.onAir != nil {
+	turn := c.newTurn(e)
+	if c.opt.Schedule != nil {
+		turn.Forced = true
+		if showID != "" {
+			for _, show := range c.opt.Schedule.ShowsFor(e.s.DJ.Username) {
+				if show.ID == showID {
+					turn.Show = &show
+				}
+			}
+			if turn.Show == nil {
+				return errors.New("that DJ does not host that show")
+			}
+		}
+		// Putting this DJ on over a scheduled DJ who is ready is a
+		// deliberate choice, and it stands for the rest of that slot.
+		if slot := c.currentSlot(); slot != nil && !slot.Allows(e.s.DJ.Username) {
+			if other := c.candidate(slot); other != nil || (c.onAir != nil && slot.Allows(c.onAir.s.DJ.Username)) {
+				turn.overrides = slot.ID
+			}
+		}
+	}
+	if c.onAir != nil && c.onAir != e && c.opt.Schedule == nil {
 		c.onAir.held = true
 	}
 	e.held = false
-	c.switchTo(e)
+	c.switchTo(e, turn)
+	// A DJ put on air during their own slot is simply on schedule.
+	c.settle()
 	return nil
 }
 
-// Pull takes a session off air (or out of the queue) and holds it until an
-// operator airs it again. The next DJ in the queue, if any, goes on.
+// Pull takes a session off air (or out of contention) and holds it until
+// an operator airs it again. Whoever is due next, if anyone, goes on.
 func (c *Controller) Pull(sessionID string) error {
 	c.mu.Lock()
 	defer c.changed()
@@ -216,9 +360,9 @@ func (c *Controller) Pull(sessionID string) error {
 	}
 	e.held = true
 	if c.onAir == e {
-		c.switchTo(nil)
+		c.switchTo(nil, Turn{})
 	}
-	c.fill()
+	c.settle()
 	return nil
 }
 
@@ -234,6 +378,19 @@ func (c *Controller) Kick(sessionID string) error {
 	return nil
 }
 
+// Shutdown takes whoever is on air off and waits for their station
+// connection and recording to be closed.
+func (c *Controller) Shutdown() {
+	c.mu.Lock()
+	c.switchTo(nil, Turn{})
+	done := c.done
+	c.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
 func (c *Controller) find(id string) *entry {
 	for _, e := range c.entries {
 		if e.s.ID == id {
@@ -243,37 +400,18 @@ func (c *Controller) find(id string) *entry {
 	return nil
 }
 
-// next picks who should go on air after the current DJ: the longest-waiting
-// ready DJ, preferring ones whose credentials are known to work.
-func (c *Controller) next() *entry {
-	var unverified *entry
-	for _, e := range c.entries {
-		if e == c.onAir || e.held || !e.s.Ready() {
-			continue
-		}
-		if e.s.Verified() {
-			return e
-		}
-		if unverified == nil {
-			unverified = e
-		}
-	}
-	return unverified
-}
-
-// fill puts the next DJ on air if nobody is. Call with mu held.
-func (c *Controller) fill() {
-	if c.onAir == nil {
-		if e := c.next(); e != nil {
-			c.switchTo(e)
-		}
+// newTurn makes a turn for e with no show attached. Call with mu held.
+func (c *Controller) newTurn(e *entry) Turn {
+	c.turns++
+	return Turn{
+		ID: e.s.ID + "-" + strconv.Itoa(c.turns), DJ: e.s.DJ, SessionID: e.s.ID,
 	}
 }
 
-// switchTo changes who is on air; nil means nobody. Call with mu held. The
-// old upstream connection is closed before the new one opens, because the
-// station allows only one source at a time.
-func (c *Controller) switchTo(e *entry) {
+// switchTo changes who is on air. A nil entry means nobody. Call with mu
+// held. The old upstream connection is closed before the new one opens,
+// because the station allows only one source at a time.
+func (c *Controller) switchTo(e *entry, turn Turn) {
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
@@ -281,12 +419,18 @@ func (c *Controller) switchTo(e *entry) {
 	if c.onAir != nil {
 		c.opt.Log.Info("off air", "dj", c.onAir.s.DJ.Username, "session", c.onAir.s.ID)
 		c.onAir.link, c.onAir.linkErr, c.onAir.title, c.onAir.recording = "", "", "", false
+		c.onAir.turn = Turn{}
 	}
 	c.onAir = e
 	if e == nil {
 		return
 	}
-	c.opt.Log.Info("on air", "dj", e.s.DJ.Username, "session", e.s.ID)
+	e.turn = turn
+	select { // a rebind meant for an earlier turn must not reach this one
+	case <-e.rebind:
+	default:
+	}
+	c.opt.Log.Info("on air", "dj", e.s.DJ.Username, "session", e.s.ID, "show", showName(turn.Show))
 	ctx, cancel := context.WithCancel(context.Background())
 	prev, done := c.done, make(chan struct{})
 	c.cancel, c.done = cancel, done
@@ -296,6 +440,24 @@ func (c *Controller) switchTo(e *entry) {
 		<-prev
 		c.air(ctx, e)
 	}()
+}
+
+// retake gives the DJ on air a new turn without interrupting their audio.
+// Call with mu held.
+func (c *Controller) retake(e *entry, turn Turn) {
+	e.turn = turn
+	c.opt.Log.Info("new turn for the dj on air", "dj", e.s.DJ.Username, "show", showName(turn.Show))
+	select {
+	case e.rebind <- struct{}{}:
+	default:
+	}
+}
+
+func showName(s *schedule.Show) string {
+	if s == nil {
+		return ""
+	}
+	return s.Name
 }
 
 func (c *Controller) creds(e *entry) upstream.Credentials {
@@ -317,6 +479,12 @@ func (c *Controller) setLink(e *entry, link, errText string) {
 	c.changed()
 }
 
+func (c *Controller) emit(kind string, turn Turn, title string) {
+	if c.opt.OnEvent != nil {
+		c.opt.OnEvent(Event{Kind: kind, At: c.opt.Now(), Turn: turn, Title: title})
+	}
+}
+
 // air keeps e's frames flowing to the station until ctx is cancelled or the
 // session ends, reconnecting if the station drops us.
 func (c *Controller) air(ctx context.Context, e *entry) {
@@ -324,10 +492,40 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 	forwarded := e.s.DJ.Upstream != nil
 	delay := c.opt.RetryDelay
 	log := c.opt.Log.With("dj", e.s.DJ.Username, "session", e.s.ID)
+
+	// A turn begins the first time the station takes the stream, so that a
+	// DJ the station refuses leaves no record behind.
+	var turn Turn
 	var rec Recording
-	defer func() {
+	begun := false
+	begin := func() {
+		c.mu.Lock()
+		turn = e.turn
+		c.mu.Unlock()
+		// With a schedule, a turn with no show is off the record.
+		if c.opt.Record != nil && (c.opt.Schedule == nil || turn.Show != nil) {
+			var err error
+			if rec, err = c.opt.Record(turn); err != nil {
+				log.Error("recording could not be started", "err", err)
+				rec = nil
+			}
+		}
+		c.mu.Lock()
+		e.recording = rec != nil && c.onAir == e
+		c.mu.Unlock()
+		c.emit("on_air", turn, "")
+		begun = true
+	}
+	end := func() {
 		if rec != nil {
 			rec.Close()
+			rec = nil
+		}
+		c.emit("off_air", turn, "")
+	}
+	defer func() {
+		if begun {
+			end()
 		}
 	}()
 
@@ -335,8 +533,7 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 		conn, err := c.opt.Upstream.Connect(ctx, creds, upstream.Info{Name: e.s.DJ.DisplayName()})
 		if errors.Is(err, upstream.ErrUnauthorized) && forwarded {
 			// The DJ's own password is wrong, so retrying is
-			// pointless. Drop them so the next in the queue gets
-			// the air.
+			// pointless. Drop them so that someone else gets the air.
 			log.Warn("station rejected dj's credentials; disconnecting them")
 			if c.opt.OnRejected != nil {
 				c.opt.OnRejected(creds)
@@ -368,24 +565,28 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 			}
 		}
 		log.Info("station connection live")
-		switch {
-		case rec != nil:
+		if !begun {
+			begin()
+		} else if rec != nil {
 			rec.Gap()
-		case c.opt.Record != nil:
-			// Started only now, so that a DJ the station refuses
-			// leaves no recording behind.
-			if rec, err = c.opt.Record(e.s.DJ, e.s.ID); err != nil {
-				log.Error("recording could not be started", "err", err)
-				rec = nil
-			}
-			c.mu.Lock()
-			e.recording = rec != nil && c.onAir == e
-			c.mu.Unlock()
 		}
 		c.setLink(e, "live", "")
-		ended := c.pump(ctx, e, conn, creds, rec)
+
+		// About 13 seconds of slack at 26ms a frame before we are cut off.
+		sub := e.s.Subscribe(512)
+		result := pumpRebind
+		for result == pumpRebind {
+			result = c.pump(ctx, e, conn, creds, sub, rec, turn)
+			if result == pumpRebind {
+				// The same audio carries on under a new turn.
+				end()
+				begin()
+				c.changed()
+			}
+		}
+		sub.Close()
 		conn.Close()
-		if ended {
+		if result == pumpDone {
 			return
 		}
 		log.Warn("upstream connection lost; reconnecting")
@@ -393,16 +594,21 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 	}
 }
 
-// pump copies frames to conn. It returns true when there is nothing more
-// to do (ctx cancelled or the session ended), false to reconnect.
-func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, creds upstream.Credentials, rec Recording) bool {
-	// About 13 seconds of slack at 26ms a frame before we are cut off.
-	sub := e.s.Subscribe(512)
-	defer sub.Close()
+type pumpResult int
 
-	sendTitle := func(title string) {
+const (
+	pumpDone      pumpResult = iota // ctx cancelled or the session ended
+	pumpReconnect                   // the station connection needs re-opening
+	pumpRebind                      // the DJ on air has been given a new turn
+)
+
+// pump copies frames from sub to conn until something changes.
+func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, creds upstream.Credentials,
+	sub *session.Sub, rec Recording, turn Turn) pumpResult {
+	sendTitle := func(fromDJ string) {
+		title := fromDJ
 		if title == "" {
-			title = c.opt.FallbackTitle(e.s.DJ)
+			title = c.opt.FallbackTitle(turn)
 		}
 		c.mu.Lock()
 		same := e.title == title
@@ -414,6 +620,9 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 		if rec != nil {
 			rec.Title(title)
 		}
+		if fromDJ != "" {
+			c.emit("track", turn, fromDJ)
+		}
 		go func() {
 			tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
@@ -423,33 +632,36 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 			c.changed()
 		}()
 	}
+	// Neither a fresh station connection nor a new turn has a title yet.
 	c.mu.Lock()
-	e.title = "" // a fresh source connection has no title yet
+	e.title = ""
 	c.mu.Unlock()
 	sendTitle(e.s.Title())
 
 	for {
 		select {
 		case <-ctx.Done():
-			return true
+			return pumpDone
 		case <-conn.Closed:
-			return false
+			return pumpReconnect
+		case <-e.rebind:
+			return pumpRebind
 		case t := <-sub.Title:
 			sendTitle(t)
 		case frame, ok := <-sub.Frames:
 			if !ok {
-				// Either the session ended (Remove will cancel us
-				// shortly) or we lagged; reconnecting is right for
-				// the second and harmless for the first.
+				// Either the session ended, in which case Remove
+				// will cancel us shortly, or we lagged. Reconnecting
+				// is right for the second and harmless for the first.
 				select {
 				case <-ctx.Done():
-					return true
+					return pumpDone
 				case <-time.After(50 * time.Millisecond):
-					return false
+					return pumpReconnect
 				}
 			}
 			if err := conn.Write(frame); err != nil {
-				return false
+				return pumpReconnect
 			}
 			if rec != nil {
 				rec.Write(frame)
@@ -461,159 +673,5 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 func (c *Controller) changed() {
 	if c.opt.OnChange != nil {
 		c.opt.OnChange()
-	}
-}
-
-// DJ is one connected DJ as shown to operators.
-type DJ struct {
-	SessionID   string        `json:"session_id"`
-	Username    string        `json:"username"`
-	Name        string        `json:"name"`
-	State       State         `json:"state"`
-	Verified    bool          `json:"verified"`
-	Remote      string        `json:"remote"`
-	UserAgent   string        `json:"user_agent"`
-	ConnectedAt time.Time     `json:"connected_at"`
-	Title       string        `json:"title"`
-	Stats       session.Stats `json:"stats"`
-	// Level is the latest meter reading, or nil if there is none yet.
-	Level *session.Level `json:"level"`
-}
-
-// Status is a snapshot of the whole gate.
-type Status struct {
-	DJs []DJ `json:"djs"` // on air first, then queue order, then held
-	// OnAir is the session on air, or "".
-	OnAir string `json:"on_air"`
-	// Link is the state of the station connection while someone is on
-	// air. It is "connecting", "live" or "retrying".
-	Link      string     `json:"link,omitempty"`
-	LinkError string     `json:"link_error,omitempty"`
-	LiveSince *time.Time `json:"live_since,omitempty"`
-	// Title is what the station is currently showing for the live DJ.
-	Title string `json:"title,omitempty"`
-	// Recording reports whether the live DJ's turn is being recorded.
-	Recording bool `json:"recording"`
-}
-
-func (c *Controller) Status() Status {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// An empty list rather than a null one, so that clients can always
-	// iterate over it.
-	st := Status{DJs: []DJ{}}
-	rank := func(s State) int {
-		return map[State]int{StateOnAir: 0, StateQueued: 1, StateConnecting: 2, StateHeld: 3}[s]
-	}
-	for _, e := range c.entries {
-		d := DJ{
-			SessionID: e.s.ID, Username: e.s.DJ.Username, Name: e.s.DJ.DisplayName(),
-			Verified: e.s.Verified(), Remote: e.s.Remote, UserAgent: e.s.UserAgent,
-			ConnectedAt: e.s.ConnectedAt, Title: e.s.Title(), Stats: e.s.Stats(), Level: e.s.Level.Load(),
-		}
-		switch {
-		case e == c.onAir:
-			d.State = StateOnAir
-		case e.held:
-			d.State = StateHeld
-		case e.s.Ready():
-			d.State = StateQueued
-		default:
-			d.State = StateConnecting
-		}
-		// Stable insertion by rank keeps connection order within a state.
-		i := len(st.DJs)
-		for i > 0 && rank(st.DJs[i-1].State) > rank(d.State) {
-			i--
-		}
-		st.DJs = append(st.DJs, DJ{})
-		copy(st.DJs[i+1:], st.DJs[i:])
-		st.DJs[i] = d
-	}
-	if e := c.onAir; e != nil {
-		st.OnAir, st.Link, st.LinkError, st.Title, st.Recording = e.s.ID, e.link, e.linkErr, e.title, e.recording
-		if e.link == "live" {
-			t := e.liveSince
-			st.LiveSince = &t
-		}
-	}
-	return st
-}
-
-// OnAirTitle is the title the station is showing for the DJ on air through
-// Icegator, and whether anyone is.
-func (c *Controller) OnAirTitle() (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.onAir == nil || c.onAir.link != "live" {
-		return "", false
-	}
-	return c.onAir.title, true
-}
-
-// Unverified counts connected sessions whose credentials are not known to
-// work, in total and from one address.
-func (c *Controller) Unverified(ip string) (total, fromIP int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, e := range c.entries {
-		if !e.s.Verified() {
-			total++
-			if host := remoteIP(e.s.Remote); host == ip {
-				fromIP++
-			}
-		}
-	}
-	return
-}
-
-// Find returns a connected session whose identity satisfies match,
-// preferring the one on air.
-func (c *Controller) Find(match func(session.Identity) bool) *session.Session {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.onAir != nil && match(c.onAir.s.DJ) {
-		return c.onAir.s
-	}
-	for _, e := range c.entries {
-		if match(e.s.DJ) {
-			return e.s
-		}
-	}
-	return nil
-}
-
-func remoteIP(addr string) string {
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
-		}
-	}
-	return addr
-}
-
-// Levels returns the latest meter reading for every session that has one.
-func (c *Controller) Levels() map[string]*session.Level {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	m := make(map[string]*session.Level, len(c.entries))
-	for _, e := range c.entries {
-		if l := e.s.Level.Load(); l != nil {
-			m[e.s.ID] = l
-		}
-	}
-	return m
-}
-
-// Shutdown takes whoever is on air off and waits for their station
-// connection and recording to be closed.
-func (c *Controller) Shutdown() {
-	c.mu.Lock()
-	c.switchTo(nil)
-	done := c.done
-	c.mu.Unlock()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
 	}
 }

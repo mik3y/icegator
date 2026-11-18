@@ -17,7 +17,14 @@ func TestMinimalForward(t *testing.T) {
 	if c.Auth != "forward" || c.Listen.Ingest != ":8000" || c.Handoff.Policy != "manual" {
 		t.Fatalf("defaults: %+v", c)
 	}
-	if got := c.FallbackTitle("Night Owl"); got != "Night Owl" {
+	if got := c.FallbackTitle("Night Owl", ""); got != "Night Owl" {
+		t.Fatal(got)
+	}
+	c.Metadata.Fallback = "{show} with {dj}"
+	if got := c.FallbackTitle("Night Owl", "Late Shift"); got != "Late Shift with Night Owl" {
+		t.Fatal(got)
+	}
+	if got := c.FallbackTitle("Night Owl", ""); got != "Night Owl" {
 		t.Fatal(got)
 	}
 }

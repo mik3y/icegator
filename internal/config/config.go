@@ -64,7 +64,7 @@ type Handoff struct {
 
 type Metadata struct {
 	// Fallback is the title shown when the DJ has sent none. "{dj}" is
-	// replaced by the DJ's name. Default "{dj}".
+	// replaced by the DJ's name and "{show}" by the show's. Default "{dj}".
 	Fallback string `yaml:"fallback"`
 }
 
@@ -195,7 +195,12 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
-// FallbackTitle fills in the metadata.fallback template.
-func (c *Config) FallbackTitle(djName string) string {
-	return strings.ReplaceAll(c.Metadata.Fallback, "{dj}", djName)
+// FallbackTitle fills in the metadata.fallback template. A template that
+// mentions the show is no use when there is none, so the DJ's name is used
+// alone in that case.
+func (c *Config) FallbackTitle(djName, showName string) string {
+	if showName == "" && strings.Contains(c.Metadata.Fallback, "{show}") {
+		return djName
+	}
+	return strings.NewReplacer("{dj}", djName, "{show}", showName).Replace(c.Metadata.Fallback)
 }

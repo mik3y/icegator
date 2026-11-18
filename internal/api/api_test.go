@@ -31,8 +31,8 @@ func (g *fakeGate) Levels() map[string]*session.Level {
 	return map[string]*session.Level{"s1": {Loudness: -14, Verdict: "good"}}
 }
 func (g *fakeGate) Handoff() bool { g.calls = append(g.calls, "handoff"); return g.waiting }
-func (g *fakeGate) Air(id string) error {
-	g.calls = append(g.calls, "air "+id)
+func (g *fakeGate) Air(id, showID string) error {
+	g.calls = append(g.calls, strings.TrimSpace("air "+id+" "+showID))
 	if id == "nope" {
 		return errors.New("no such session")
 	}
@@ -140,13 +140,16 @@ func TestActions(t *testing.T) {
 			t.Fatalf("%s: %d", a, code)
 		}
 	}
+	if code, _ := post(t, c, ts.URL+"/api/sessions/s1/air", `{"show_id":"show9"}`, true); code != 200 {
+		t.Fatalf("air with a show: %d", code)
+	}
 	if code, body := post(t, c, ts.URL+"/api/sessions/nope/air", "", true); code != 409 || !strings.Contains(body, "no such session") {
 		t.Fatalf("air unknown: %d %s", code, body)
 	}
 	if code, _ := post(t, c, ts.URL+"/api/sessions/s1/explode", "", true); code != 404 {
 		t.Fatalf("unknown action: %d", code)
 	}
-	want := "handoff,handoff,air s1,pull s1,kick s1,air nope"
+	want := "handoff,handoff,air s1,pull s1,kick s1,air s1 show9,air nope"
 	if got := strings.Join(gate.calls, ","); got != want {
 		t.Fatalf("gate calls %q, want %q", got, want)
 	}
