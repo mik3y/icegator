@@ -28,3 +28,16 @@ export function host(remote: string): string {
   const i = remote.lastIndexOf(":");
   return i > 0 ? remote.slice(0, i) : remote;
 }
+
+/** A time of day in the viewer's own zone, such as 9:00 PM. */
+export function clock(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** A slot's span, such as 8:00 PM to 9:00 PM. */
+export function span(start: string, end: string): string {
+  return `${clock(start)} to ${clock(end)}`;
+}

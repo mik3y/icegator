@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type Dj, type Status } from "./api";
-import { elapsed, host, streamFormat } from "./format";
+import { api, type Dj, type Slot, type Status } from "./api";
+import { clock, elapsed, host, span, streamFormat } from "./format";
 import { useLive, useNow } from "./live";
 import Meter, { LevelVerdict } from "./Meter";
 
@@ -47,6 +47,28 @@ function Facts({
   );
 }
 
+/** What the schedule has to say about the DJ on air, if anything. */
+function Standing({ status }: { status: Status }) {
+  if (status.forced) {
+    return (
+      <p className="standing">
+        Put on air by an operator, off the schedule.
+        {!status.show &&
+          " With no show named, this is not being recorded or logged."}
+      </p>
+    );
+  }
+  if (!status.overrun_since) return null;
+  return (
+    <p className="standing warn">
+      Their show ended at {clock(status.overrun_since)}.{" "}
+      {status.cut_at
+        ? `They will be taken off at ${clock(status.cut_at)} unless the next DJ is ready first.`
+        : "They stay on until the next show's DJ is ready."}
+    </p>
+  );
+}
+
 function OnAir({
   status,
   dj,
@@ -62,6 +84,11 @@ function OnAir({
   let lamp = "On air";
   if (status.link === "connecting") lamp = "Connecting to the station";
   if (status.link === "retrying") lamp = "Station connection lost. Retrying.";
+  // With no title from the DJ, the station shows a stand-in built from
+  // the names already on this strip.
+  const standIn =
+    status.title === dj.name ||
+    (status.show && status.title === `${status.show.name} with ${dj.name}`);
   return (
     <section
       className={`strip ${live ? "live" : "trouble"}`}
@@ -77,12 +104,10 @@ function OnAir({
         )}
       </div>
       <div>
+        {status.show && <p className="show">{status.show.name}</p>}
         <h1>{dj.name}</h1>
-        {/* With no title from the DJ, the station shows their name, which
-            is already the heading. */}
-        {status.title && status.title !== dj.name && (
-          <p className="title">{status.title}</p>
-        )}
+        {status.title && !standIn && <p className="title">{status.title}</p>}
+        <Standing status={status} />
       </div>
       <div>
         <Meter sessionId={dj.session_id} size="large" />
@@ -93,6 +118,7 @@ function OnAir({
           dj={dj}
           now={now}
           liveSince={live ? status.live_since : undefined}
+          recording={status.recording}
         />
         <div className="actions">
           <button
@@ -114,7 +140,21 @@ function OnAir({
   );
 }
 
-function NobodyOnAir({ anyoneConnected }: { anyoneConnected: boolean }) {
+function NobodyOnAir({ status }: { status: Status }) {
+  const scheduled = status.info.mode === "streamlover";
+  let detail: string;
+  if (!scheduled) {
+    detail =
+      status.djs.length > 0
+        ? "Put one of the DJs below on air when you are ready."
+        : "The first DJ to connect goes on air once their audio is flowing.";
+  } else if (status.current) {
+    detail = `${status.current.show.name} is scheduled now, and none of its DJs is connected and ready.`;
+  } else if (status.next) {
+    detail = `Nothing is scheduled right now. ${status.next.show.name} starts at ${clock(status.next.start)}.`;
+  } else {
+    detail = "Nothing is scheduled.";
+  }
   return (
     <section className="strip" aria-label="On air">
       <p className="tally soft">
@@ -123,27 +163,76 @@ function NobodyOnAir({ anyoneConnected }: { anyoneConnected: boolean }) {
       </p>
       <p className="empty">
         Icegator is not connected to the station, so the station is playing its
-        own programming.
-        {anyoneConnected
-          ? " Put one of the DJs below on air when you are ready."
-          : " The first DJ to connect goes on air once their audio is flowing."}
+        own programming. {detail}
       </p>
     </section>
   );
 }
 
+function ScheduleLine({
+  label,
+  slot,
+  names,
+}: {
+  label: string;
+  slot?: Slot;
+  names: Map<string, string>;
+}) {
+  if (!slot) {
+    return (
+      <div>
+        <dt>{label}</dt>
+        <dd className="soft">Nothing scheduled</dd>
+      </div>
+    );
+  }
+  const hosts = slot.hosts ?? [];
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>
+        <b>{slot.show.name}</b>, {span(slot.start, slot.end)}
+        <span className="soft">
+          {hosts.length > 0
+            ? `, with ${hosts.map((h, i) => slot.host_names?.[i] ?? names.get(h) ?? h).join(" and ")}`
+            : ", with no DJ assigned"}
+        </span>
+      </dd>
+    </div>
+  );
+}
+
+/** What a DJ who is not on air is here for, when there is a schedule. */
+function claim(dj: Dj, status: Status): string {
+  if (status.current?.hosts?.includes(dj.username))
+    return `Here for ${status.current.show.name}, which is on now`;
+  if (status.next?.hosts?.includes(dj.username))
+    return `Here for ${status.next.show.name} at ${clock(status.next.start)}`;
+  return "Nothing scheduled soon";
+}
+
 function Row({
   dj,
+  status,
   place,
   airLabel,
   act,
 }: {
   dj: Dj;
+  status: Status;
   place?: number;
   airLabel: string;
   act: Act;
 }) {
+  const scheduled = status.info.mode === "streamlover";
   const connecting = dj.state === "connecting";
+  // Putting a DJ on air against the schedule can name one of their shows,
+  // which is what gets it recorded and logged.
+  const [showId, setShowId] = useState("");
+  const shows = dj.shows ?? [];
+  let detail = dj.title || streamFormat(dj.stats);
+  if (connecting) detail = "Waiting for audio";
+  else if (scheduled) detail = claim(dj, status);
   return (
     <li className="row">
       <span className="place">{place ?? ""}</span>
@@ -157,21 +246,32 @@ function Row({
             Login not confirmed
           </span>
         )}
-        <p className="small soft">
-          {connecting
-            ? "Waiting for audio"
-            : dj.title || streamFormat(dj.stats)}
-        </p>
+        <p className="small soft">{detail}</p>
       </div>
       <div className="level">
         <Meter sessionId={dj.session_id} />
         <LevelVerdict sessionId={dj.session_id} />
       </div>
       <div className="actions">
+        {scheduled && shows.length > 0 && (
+          <select
+            aria-label={`Show for ${dj.name} to go on air as`}
+            value={showId}
+            onChange={(e) => setShowId(e.target.value)}
+            disabled={connecting}
+          >
+            <option value="">No show, off the record</option>
+            {shows.map((show) => (
+              <option key={show.id} value={show.id}>
+                As {show.name}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           type="button"
           disabled={connecting}
-          onClick={() => act(() => api.air(dj.session_id))}
+          onClick={() => act(() => api.air(dj.session_id, showId))}
         >
           {airLabel}
         </button>
@@ -226,14 +326,28 @@ export default function Console({
     );
   }
 
+  const scheduled = status.info.mode === "streamlover";
   const onAir = status.djs.find((d) => d.state === "on_air");
   const waiting = status.djs.filter(
     (d) => d.state === "queued" || d.state === "connecting",
   );
   const held = status.djs.filter((d) => d.state === "held");
-  const next = waiting.find((d) => d.state === "queued");
+  const next = status.djs.find((d) => d.session_id === status.handoff_to);
+  const names = new Map(status.djs.map((d) => [d.username, d.name]));
   const airLabel = onAir ? "Put on air now" : "Put on air";
   let place = 0;
+
+  let waitingNote: string;
+  if (scheduled) {
+    waitingNote =
+      "Nobody else is connected. A DJ can connect ahead of their show and wait here until it starts.";
+  } else if (status.info.policy === "auto") {
+    waitingNote =
+      "Nobody is waiting. A DJ who connects while someone is on air appears here briefly, then takes over.";
+  } else {
+    waitingNote =
+      "Nobody is waiting. A DJ who connects while someone is on air appears here until you hand off to them.";
+  }
 
   return (
     <div className="page">
@@ -258,7 +372,7 @@ export default function Console({
         {onAir ? (
           <OnAir status={status} dj={onAir} now={now} act={act} />
         ) : (
-          <NobodyOnAir anyoneConnected={status.djs.length > 0} />
+          <NobodyOnAir status={status} />
         )}
 
         {onAir && next && (
@@ -272,30 +386,41 @@ export default function Console({
             </button>
             <p className="small soft">
               {onAir.name} comes off air and stays connected. {next.name} goes
-              on.
+              on
+              {scheduled && status.current
+                ? ` with ${status.current.show.name}.`
+                : "."}
             </p>
           </div>
         )}
 
+        {scheduled && (
+          <section className="group">
+            <h2>Schedule</h2>
+            <dl className="schedule">
+              <ScheduleLine label="Now" slot={status.current} names={names} />
+              <ScheduleLine label="Next" slot={status.next} names={names} />
+            </dl>
+          </section>
+        )}
+
         <section className="group">
-          <h2>Waiting</h2>
+          <h2>{scheduled ? "Connected" : "Waiting"}</h2>
           {waiting.length === 0 ? (
-            <p className="empty soft">
-              Nobody is waiting. A DJ who connects while someone is on air
-              appears here
-              {status.info.policy === "auto"
-                ? " briefly, then takes over."
-                : " until you hand off to them."}
-            </p>
+            <p className="empty soft">{waitingNote}</p>
           ) : (
             <ol className="rows">
               {waiting.map((dj) => {
-                if (dj.state === "queued") place += 1;
+                // A queue has an order. A schedule does not.
+                if (!scheduled && dj.state === "queued") place += 1;
                 return (
                   <Row
                     key={dj.session_id}
                     dj={dj}
-                    place={dj.state === "queued" ? place : undefined}
+                    status={status}
+                    place={
+                      !scheduled && dj.state === "queued" ? place : undefined
+                    }
                     airLabel={airLabel}
                     act={act}
                   />
@@ -313,6 +438,7 @@ export default function Console({
                 <Row
                   key={dj.session_id}
                   dj={dj}
+                  status={status}
                   airLabel={airLabel}
                   act={act}
                 />

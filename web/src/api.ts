@@ -30,6 +30,23 @@ export interface Dj {
     last_data: string;
   };
   level: Level | null;
+  /** The shows this DJ hosts, when there is a schedule. */
+  shows?: Show[];
+}
+
+export interface Show {
+  id: string;
+  name: string;
+}
+
+export interface Slot {
+  id: string;
+  show: Show;
+  start: string;
+  end: string;
+  hosts: string[] | null;
+  /** Display names for `hosts`, in the same order, when known. */
+  host_names?: string[];
 }
 
 export interface Info {
@@ -38,6 +55,8 @@ export interface Info {
   auth: "forward" | "local";
   /** Whether a DJ with a claim to the air takes it without an operator. */
   policy: "auto" | "manual";
+  /** With a schedule, "none", "strict" or a duration such as "10m". */
+  overrun?: string;
 }
 
 export interface Status {
@@ -49,6 +68,18 @@ export interface Status {
   live_since?: string;
   title?: string;
   recording: boolean;
+  /** The session a handoff would put on air now, or "". */
+  handoff_to: string;
+  // The rest is set only when there is a schedule.
+  show?: Show;
+  /** An operator put the DJ on air off-schedule. */
+  forced?: boolean;
+  /** The end of the on-air DJ's show, once it has passed. */
+  overrun_since?: string;
+  /** When the overrunning DJ will be taken off, if they will be. */
+  cut_at?: string;
+  current?: Slot;
+  next?: Slot;
 }
 
 export class ApiError extends Error {
@@ -97,7 +128,12 @@ export const api = {
     call<{ username: string }>("POST", "/api/login", { username, password }),
   logout: () => call("POST", "/api/logout"),
   handoff: () => call("POST", "/api/handoff"),
-  air: (id: string) => call("POST", `/api/sessions/${id}/air`),
+  air: (id: string, showId?: string) =>
+    call(
+      "POST",
+      `/api/sessions/${id}/air`,
+      showId ? { show_id: showId } : undefined,
+    ),
   pull: (id: string) => call("POST", `/api/sessions/${id}/pull`),
   kick: (id: string) => call("POST", `/api/sessions/${id}/kick`),
 };

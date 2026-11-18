@@ -210,6 +210,25 @@ button.quiet:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+.strip .show {
+  font-size: 1.125rem;
+  font-weight: 650;
+  font-stretch: 108%;
+  margin-bottom: 0.25rem;
+}
+
+.strip .standing {
+  margin-top: 0.625rem;
+  font-size: 0.9375rem;
+  color: var(--ink-soft);
+  max-width: 38rem;
+}
+
+.strip .standing.warn {
+  color: var(--warm);
+  font-weight: 600;
+}
+
 .strip .title {
   font-size: 1.125rem;
   margin-top: 0.375rem;
@@ -317,6 +336,47 @@ button.quiet:hover:not(:disabled) {
   .row .actions {
     grid-column: 2;
   }
+}
+
+.schedule {
+  margin: 0;
+}
+
+.schedule div {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.schedule dt {
+  color: var(--ink-soft);
+  font-weight: 650;
+}
+
+.schedule dd {
+  margin: 0;
+}
+
+.schedule b {
+  font-weight: 650;
+}
+
+select {
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--rule);
+  background: var(--panel);
+  color: var(--ink);
+  max-width: 14rem;
+}
+
+select:focus-visible {
+  outline: 3px solid var(--cue);
+  outline-offset: 2px;
 }
 
 .empty {
