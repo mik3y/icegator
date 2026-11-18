@@ -1,0 +1,168 @@
+// Package config loads and validates Icegator's YAML configuration.
+package config
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Config struct {
+	Station  Station  `yaml:"station"`
+	Listen   Listen   `yaml:"listen"`
+	Upstream Upstream `yaml:"upstream"`
+	// Auth is "forward" or "local". Under "forward", the default, DJs' own
+	// station logins are passed through. Under "local", Icegator checks
+	// the keys under `djs`.
+	Auth     string   `yaml:"auth"`
+	Handoff  Handoff  `yaml:"handoff"`
+	Metadata Metadata `yaml:"metadata"`
+	DJs      []DJ     `yaml:"djs"`
+	// StateDir holds what must survive a restart. Default "./state".
+	StateDir string `yaml:"state_dir"`
+}
+
+type Station struct {
+	Name string `yaml:"name"`
+}
+
+type Listen struct {
+	Ingest    string `yaml:"ingest"`    // DJs connect here; default ":8000"
+	Dashboard string `yaml:"dashboard"` // operators; default ":8080"
+}
+
+type Upstream struct {
+	// URL is the station's source address including the mount, e.g.
+	// http://azuracast.example.com:8005/
+	URL string `yaml:"url"`
+	// Username and Password are the account Icegator streams as. Needed
+	// with `auth: local` and unused with `auth: forward`.
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
+type Handoff struct {
+	// Policy says what happens when a DJ connects while another is on
+	// air. "manual" (the default) keeps the DJ on air there until they
+	// disconnect or an operator hands off. "auto" puts the newcomer on as
+	// soon as their audio is flowing.
+	Policy string `yaml:"policy"`
+	// ReadyAfter is how much audio a DJ must send before they can go on
+	// air. Default 3s.
+	ReadyAfter time.Duration `yaml:"ready_after"`
+}
+
+type Metadata struct {
+	// Fallback is the title shown when the DJ has sent none. "{dj}" is
+	// replaced by the DJ's name. Default "{dj}".
+	Fallback string `yaml:"fallback"`
+}
+
+type DJ struct {
+	Slug string `yaml:"slug"`
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
+}
+
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// Load reads the file at path. "${NAME}" anywhere in it is replaced by that
+// environment variable, so secrets can stay out of the file.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(raw, os.LookupEnv)
+}
+
+func Parse(raw []byte, lookup func(string) (string, bool)) (*Config, error) {
+	var missing []string
+	lines := bytes.Split(raw, []byte("\n"))
+	for i, line := range lines {
+		// Comments are left alone, so that one can mention ${NAME}.
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("#")) {
+			continue
+		}
+		lines[i] = envRef.ReplaceAllFunc(line, func(m []byte) []byte {
+			name := string(envRef.FindSubmatch(m)[1])
+			v, ok := lookup(name)
+			if !ok {
+				missing = append(missing, name)
+			}
+			return []byte(v)
+		})
+	}
+	raw = bytes.Join(lines, []byte("\n"))
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("config refers to unset environment variables: %s", strings.Join(missing, ", "))
+	}
+
+	var c Config
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true) // a typo in a key should not be silently ignored
+	if err := dec.Decode(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	c.defaults()
+	return &c, c.validate()
+}
+
+func (c *Config) defaults() {
+	def := func(p *string, v string) {
+		if *p == "" {
+			*p = v
+		}
+	}
+	def(&c.Listen.Ingest, ":8000")
+	def(&c.Listen.Dashboard, ":8080")
+	def(&c.Auth, "forward")
+	def(&c.Handoff.Policy, "manual")
+	def(&c.Metadata.Fallback, "{dj}")
+	def(&c.StateDir, "state")
+	if c.Handoff.ReadyAfter == 0 {
+		c.Handoff.ReadyAfter = 3 * time.Second
+	}
+}
+
+func (c *Config) validate() error {
+	var errs []error
+	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+
+	if c.Upstream.URL == "" {
+		bad("upstream.url is required")
+	}
+	switch c.Auth {
+	case "forward":
+		if len(c.DJs) > 0 {
+			bad("djs are listed but auth is \"forward\"; set auth: local to use stream keys")
+		}
+		if c.Upstream.Username != "" || c.Upstream.Password != "" {
+			bad("upstream.username/password are set but auth is \"forward\", which uses each DJ's own login; remove them or set auth: local")
+		}
+	case "local":
+		if len(c.DJs) == 0 {
+			bad("auth is \"local\" but no djs are listed")
+		}
+		if c.Upstream.Username == "" || c.Upstream.Password == "" {
+			bad("auth is \"local\", so upstream.username and upstream.password are required")
+		}
+	default:
+		bad("auth must be \"forward\" or \"local\", not %q", c.Auth)
+	}
+	if p := c.Handoff.Policy; p != "auto" && p != "manual" {
+		bad("handoff.policy must be \"auto\" or \"manual\", not %q", p)
+	}
+	return errors.Join(errs...)
+}
+
+// FallbackTitle fills in the metadata.fallback template.
+func (c *Config) FallbackTitle(djName string) string {
+	return strings.ReplaceAll(c.Metadata.Fallback, "{dj}", djName)
+}

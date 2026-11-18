@@ -1,0 +1,40 @@
+# Icegator configuration. Copy to icegator.yaml and edit.
+# "${NAME}" is replaced by that environment variable.
+
+station:
+  name: Example Radio
+
+listen:
+  ingest: ":8000"        # DJs point their streaming software here
+  dashboard: ":8080"
+
+upstream:
+  # The station's live-DJ (source) address, including the mount.
+  url: http://azuracast.example.com:8005/
+
+# forward: DJs log in with their own station account; Icegator passes it on.
+# local:   DJs log in with a stream key listed below; Icegator streams to the
+#          station as the single account given under `upstream`.
+auth: forward
+
+handoff:
+  # What happens when a DJ connects while another is on air.
+  # manual: the DJ on air stays until they disconnect or an operator hands off.
+  # auto:   the DJ who connected takes over as soon as their audio is flowing.
+  policy: manual
+
+metadata:
+  # Shown when the DJ's software sends no track titles.
+  fallback: "{dj}"
+
+# --- With `auth: local`, replace the upstream block and list your DJs: ---
+#
+# upstream:
+#   url: http://azuracast.example.com:8005/
+#   username: icegator
+#   password: ${UPSTREAM_PASSWORD}
+#
+# djs:                      # make keys with: icegator -new-key
+#   - slug: nightowl
+#     name: Night Owl
+#     key: A573-9BZX
