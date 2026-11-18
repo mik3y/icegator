@@ -14,9 +14,12 @@ import (
 )
 
 type Config struct {
-	Station  Station  `yaml:"station"`
-	Listen   Listen   `yaml:"listen"`
-	Upstream Upstream `yaml:"upstream"`
+	Station Station `yaml:"station"`
+	// Streamlover, when set, has Icegator take the station's DJs and
+	// schedule from a StreamLover station and report what airs back to it.
+	Streamlover Streamlover `yaml:"streamlover"`
+	Listen      Listen      `yaml:"listen"`
+	Upstream    Upstream    `yaml:"upstream"`
 	// Auth is "forward" or "local". Under "forward", the default, DJs' own
 	// station logins are passed through. Under "local", Icegator checks
 	// the keys under `djs`.
@@ -36,6 +39,26 @@ type Station struct {
 	Name string `yaml:"name"`
 }
 
+type Streamlover struct {
+	// URL is where StreamLover is, for example https://streamlover.app.
+	URL string `yaml:"url"`
+	// Station is the station's id or slug there.
+	Station string `yaml:"station"`
+	// APIKey is a station API key, made in the station's settings.
+	APIKey string `yaml:"api_key"`
+	// SyncInterval is how often the DJs and schedule are re-read.
+	// Default 1 minute.
+	SyncInterval time.Duration `yaml:"sync_interval"`
+	// UploadRecordings has Icegator record what each DJ sends to air and
+	// upload it to StreamLover as that broadcast's recording. The local
+	// copy is deleted once StreamLover has it. Default false.
+	UploadRecordings bool `yaml:"upload_recordings"`
+	// Visibility is "private" (the default) or "public", and is given to
+	// the broadcasts Icegator logs. Private keeps a broadcast and its
+	// recording from listeners until someone publishes the episode.
+	Visibility string `yaml:"visibility"`
+}
+
 type Listen struct {
 	Ingest    string `yaml:"ingest"`    // DJs connect here; default ":8000"
 	Dashboard string `yaml:"dashboard"` // operators; default ":8080"
@@ -52,11 +75,22 @@ type Upstream struct {
 }
 
 type Handoff struct {
-	// Policy says what happens when a DJ connects while another is on
-	// air. "manual" (the default) keeps the DJ on air there until they
-	// disconnect or an operator hands off. "auto" puts the newcomer on as
-	// soon as their audio is flowing.
+	// Policy says what happens when a DJ with a claim to the air is ready
+	// while another DJ is on it. "auto" puts them on as soon as they are
+	// ready. "manual" waits for an operator, or in a queue for the DJ on
+	// air to disconnect. In a queue the DJ with the claim is whoever has
+	// connected, and with a schedule it is the DJ whose show is now on.
+	// The default is "manual" in a queue and "auto" with a schedule.
 	Policy string `yaml:"policy"`
+	// Overrun applies when there is a schedule. It says how long a DJ
+	// may stay on air past the end of their show when the next show's DJ
+	// is not ready, or nothing is scheduled next. A scheduled DJ who is
+	// ready takes over whatever this says.
+	//
+	//   none    no limit (the default)
+	//   strict  none at all; the DJ is taken off as their show ends
+	//   10m     that much, as a duration such as 60s or 10m
+	Overrun string `yaml:"overrun"`
 	// StationConnection says what happens to the connection to the
 	// station at a handoff. "reopen" (the default) closes it and opens a
 	// new one for the next DJ, so the station plays its own programming
@@ -147,7 +181,19 @@ func (c *Config) defaults() {
 	}
 	def(&c.Listen.Ingest, ":8000")
 	def(&c.Listen.Dashboard, ":8080")
+	if c.Mode() == "streamlover" {
+		// DJs sign in with stream keys from StreamLover, and the titles
+		// can name the show.
+		def(&c.Auth, "local")
+		def(&c.Metadata.Fallback, "{show} with {dj}")
+		def(&c.Streamlover.Visibility, "private")
+		def(&c.Handoff.Policy, "auto")
+		if c.Streamlover.SyncInterval == 0 {
+			c.Streamlover.SyncInterval = time.Minute
+		}
+	}
 	def(&c.Auth, "forward")
+	def(&c.Handoff.Overrun, "none")
 	def(&c.Handoff.Policy, "manual")
 	def(&c.Handoff.StationConnection, "reopen")
 	def(&c.Metadata.Fallback, "{dj}")
@@ -173,7 +219,7 @@ func (c *Config) validate() error {
 			bad("upstream.username/password are set but auth is \"forward\", which uses each DJ's own login; remove them or set auth: local")
 		}
 	case "local":
-		if len(c.DJs) == 0 {
+		if len(c.DJs) == 0 && c.Mode() != "streamlover" {
 			bad("auth is \"local\" but no djs are listed")
 		}
 		if c.Upstream.Username == "" || c.Upstream.Password == "" {
@@ -206,8 +252,29 @@ func (c *Config) validate() error {
 	default:
 		bad("handoff.station_connection must be \"reopen\" or \"keep\", not %q", c.Handoff.StationConnection)
 	}
+	if c.Mode() == "streamlover" {
+		sl := c.Streamlover
+		if sl.Station == "" || sl.APIKey == "" {
+			bad("streamlover.url is set, so streamlover.station and streamlover.api_key are required")
+		}
+		if !strings.HasPrefix(sl.URL, "http://") && !strings.HasPrefix(sl.URL, "https://") {
+			bad("streamlover.url must start with https:// or http://")
+		}
+		if c.Auth != "local" {
+			bad("with streamlover, DJs sign in with stream keys, so auth must be \"local\" or left out")
+		}
+		if len(c.DJs) > 0 {
+			bad("with streamlover, the DJs come from StreamLover; remove the djs list")
+		}
+	}
+	if _, _, err := c.Handoff.OverrunLimit(); err != nil {
+		bad("handoff.overrun must be \"none\", \"strict\" or a duration such as 60s or 10m, not %q", c.Handoff.Overrun)
+	}
 	if p := c.Handoff.Policy; p != "auto" && p != "manual" {
 		bad("handoff.policy must be \"auto\" or \"manual\", not %q", p)
+	}
+	if v := c.Streamlover.Visibility; c.Mode() == "streamlover" && v != "private" && v != "public" {
+		bad("streamlover.visibility must be \"private\" or \"public\", not %q", v)
 	}
 	return errors.Join(errs...)
 }
@@ -220,4 +287,30 @@ func (c *Config) FallbackTitle(djName, showName string) string {
 		return djName
 	}
 	return strings.NewReplacer("{dj}", djName, "{show}", showName).Replace(c.Metadata.Fallback)
+}
+
+// Mode is "streamlover" when the station's DJs and schedule come from a
+// StreamLover station, and "standalone" otherwise.
+func (c *Config) Mode() string {
+	if c.Streamlover.URL != "" {
+		return "streamlover"
+	}
+	return "standalone"
+}
+
+// OverrunLimit decodes the overrun setting. unlimited means there is no
+// limit, and otherwise limit is how much overrun is allowed, which is zero
+// for "strict".
+func (h Handoff) OverrunLimit() (unlimited bool, limit time.Duration, err error) {
+	switch h.Overrun {
+	case "", "none":
+		return true, 0, nil
+	case "strict":
+		return false, 0, nil
+	}
+	limit, err = time.ParseDuration(h.Overrun)
+	if err == nil && limit < 0 {
+		err = errors.New("negative")
+	}
+	return false, limit, err
 }

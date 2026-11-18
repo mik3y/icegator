@@ -39,6 +39,9 @@ type Info struct {
 	Mode    string `json:"mode"`   // "standalone" or "streamlover"
 	Auth    string `json:"auth"`   // "forward" or "local"
 	Policy  string `json:"policy"` // "auto" or "manual"
+	// Overrun is "none", "strict" or a duration. It applies when there is
+	// a schedule.
+	Overrun string `json:"overrun,omitempty"`
 }
 
 // Server is the dashboard's HTTP handler.

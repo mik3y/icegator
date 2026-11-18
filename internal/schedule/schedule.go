@@ -22,6 +22,9 @@ type Slot struct {
 	End   time.Time `json:"end"`
 	// Hosts are the usernames of the DJs who may take this slot.
 	Hosts []string `json:"hosts"`
+	// HostNames are the same DJs' display names, in the same order, for
+	// showing a slot whose DJs are not connected. Optional.
+	HostNames []string `json:"host_names,omitempty"`
 }
 
 // Covers reports whether the slot is in progress at t.

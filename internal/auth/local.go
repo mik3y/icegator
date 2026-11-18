@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/splatboard/icegator/internal/session"
@@ -44,11 +45,20 @@ func NormalizeKey(key string) string {
 type DJ struct {
 	Slug string
 	Name string
-	Key  string
+	// Key is the DJ's stream key, or whatever stands in for it (see
+	// Local.Digest).
+	Key string
 }
 
-// Local checks DJs against a fixed list of stream keys.
+// Local checks DJs against a list of stream keys held by Icegator.
 type Local struct {
+	// Digest, if set, means the list holds a digest of each key and not
+	// the key itself. It is applied to the normalised password a DJ
+	// presents before comparing. This is how a list served as HMACs is
+	// checked without Icegator ever holding a stream key.
+	Digest func(normalizedKey string) string
+
+	mu     sync.RWMutex
 	bySlug map[string]DJ
 	byKey  map[string]DJ
 	limit  *Limiter
@@ -57,26 +67,38 @@ type Local struct {
 // NewLocal validates the list. Keys must be unique as well as slugs, because
 // a DJ whose software insists on the username "source" is found by key alone.
 func NewLocal(djs []DJ) (*Local, error) {
-	l := &Local{bySlug: map[string]DJ{}, byKey: map[string]DJ{}, limit: NewLimiter(5, 5*time.Minute)}
+	l := &Local{limit: NewLimiter(5, 5*time.Minute)}
+	return l, l.Replace(djs)
+}
+
+// Replace swaps in a new list. On error the old list stays in force.
+func (l *Local) Replace(djs []DJ) error {
+	bySlug, byKey := map[string]DJ{}, map[string]DJ{}
 	for _, dj := range djs {
-		key := NormalizeKey(dj.Key)
+		key := dj.Key
+		if l.Digest == nil {
+			key = NormalizeKey(key)
+		}
 		slug := strings.ToLower(dj.Slug)
 		switch {
 		case slug == "" || slug == "source":
-			return nil, fmt.Errorf("dj %q: slug must be set and cannot be \"source\"", dj.Name)
+			return fmt.Errorf("dj %q: slug must be set and cannot be \"source\"", dj.Name)
 		case len(key) < 8:
-			return nil, fmt.Errorf("dj %q: key must be at least 8 characters", dj.Slug)
+			return fmt.Errorf("dj %q: key must be at least 8 characters", dj.Slug)
 		}
-		if _, dup := l.bySlug[slug]; dup {
-			return nil, fmt.Errorf("dj %q: duplicate slug", dj.Slug)
+		if _, dup := bySlug[slug]; dup {
+			return fmt.Errorf("dj %q: duplicate slug", dj.Slug)
 		}
-		if other, dup := l.byKey[key]; dup {
-			return nil, fmt.Errorf("djs %q and %q share a key", other.Slug, dj.Slug)
+		if other, dup := byKey[key]; dup {
+			return fmt.Errorf("djs %q and %q share a key", other.Slug, dj.Slug)
 		}
 		dj.Key = key
-		l.bySlug[slug], l.byKey[key] = dj, dj
+		bySlug[slug], byKey[key] = dj, dj
 	}
-	return l, nil
+	l.mu.Lock()
+	l.bySlug, l.byKey = bySlug, byKey
+	l.mu.Unlock()
+	return nil
 }
 
 func (l *Local) Authenticate(_ context.Context, username, password, ip string) (session.Identity, error) {
@@ -87,7 +109,11 @@ func (l *Local) Authenticate(_ context.Context, username, password, ip string) (
 		return session.Identity{}, ErrLimited
 	}
 	key := NormalizeKey(password)
+	if l.Digest != nil {
+		key = l.Digest(key)
+	}
 
+	l.mu.RLock()
 	var dj DJ
 	var ok bool
 	var why string
@@ -101,6 +127,7 @@ func (l *Local) Authenticate(_ context.Context, username, password, ip string) (
 	} else {
 		why = fmt.Sprintf("no DJ with a stream key has the username %q (%d DJs are known)", slug, len(l.bySlug))
 	}
+	l.mu.RUnlock()
 	if !ok {
 		l.limit.Fail(ipKey, userKey)
 		return session.Identity{}, fmt.Errorf("%w: %s", ErrDenied, why)

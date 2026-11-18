@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -25,7 +26,9 @@ import (
 	"github.com/splatboard/icegator/internal/controller"
 	"github.com/splatboard/icegator/internal/ingest"
 	"github.com/splatboard/icegator/internal/levels"
+	"github.com/splatboard/icegator/internal/recorder"
 	"github.com/splatboard/icegator/internal/session"
+	"github.com/splatboard/icegator/internal/streamlover"
 	"github.com/splatboard/icegator/internal/upstream"
 	"github.com/splatboard/icegator/web"
 )
@@ -87,10 +90,42 @@ func run(configPath string, log *slog.Logger) error {
 		},
 		Log: log,
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	var authn auth.Authenticator
 	var ctl *controller.Controller
-	switch cfg.Auth {
-	case "local":
+	var reporter *streamlover.Reporter
+	switch {
+	case cfg.Mode() == "streamlover":
+		// The station's DJs and schedule come from StreamLover, and what
+		// goes to air is reported back to it.
+		sl := cfg.Streamlover
+		client := streamlover.NewClient(sl.URL, sl.Station, sl.APIKey)
+		station := streamlover.NewStation(client, filepath.Join(cfg.StateDir, "streamlover-station.json"), log)
+		first, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := station.Sync(first)
+		cancel()
+		switch {
+		case err == nil:
+			log.Info("synced with streamlover", "url", sl.URL, "station", sl.Station)
+		case streamlover.Permanent(err):
+			// A wrong key or station will not come right by itself.
+			return fmt.Errorf("streamlover refused the first sync: %w", err)
+		default:
+			log.Warn("streamlover could not be reached at startup; using the last copy, if there is one", "err", err)
+		}
+		go station.Run(ctx, sl.SyncInterval)
+		authn = station.DJs
+		opt.Schedule = station.Schedule
+		unlimited, limit, _ := cfg.Handoff.OverrunLimit() // checked when the config was loaded
+		opt.Overrun = controller.Overrun{Unlimited: unlimited, Limit: limit}
+
+		reporter = streamlover.NewReporter(client, filepath.Join(cfg.StateDir, "streamlover-turns.json"), log)
+		reporter.Visibility = cfg.Streamlover.Visibility
+		opt.OnEvent = reporter.OnEvent
+		go reporter.Run(ctx)
+	case cfg.Auth == "local":
 		djs := make([]auth.DJ, len(cfg.DJs))
 		for i, d := range cfg.DJs {
 			djs[i] = auth.DJ{Slug: d.Slug, Name: d.Name, Key: d.Key}
@@ -98,7 +133,7 @@ func run(configPath string, log *slog.Logger) error {
 		if authn, err = auth.NewLocal(djs); err != nil {
 			return err
 		}
-	case "forward":
+	case cfg.Auth == "forward":
 		known, err := auth.OpenKnown(filepath.Join(cfg.StateDir, "known-credentials.json"))
 		if err != nil {
 			return err
@@ -109,11 +144,28 @@ func run(configPath string, log *slog.Logger) error {
 		opt.OnAccepted, opt.OnRejected = f.Confirm, f.Reject
 		authn = f
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if reporter != nil && cfg.Streamlover.UploadRecordings {
+		// Each turn on air with a show is recorded to disk, uploaded
+		// through StreamLover when the turn ends, and then deleted here.
+		rec, err := recorder.New(recorder.Options{
+			Dir: filepath.Join(cfg.StateDir, "recordings"), Deliver: reporter.Deliver, Log: log,
+		})
+		if err != nil {
+			return err
+		}
+		go rec.Run(ctx)
+		opt.Record = func(t controller.Turn) (controller.Recording, error) {
+			sub := recorder.Subject{DJ: t.DJ, SessionID: t.SessionID, TurnID: t.ID}
+			if t.Show != nil {
+				sub.ShowID, sub.Show = t.Show.ID, t.Show.Name
+			}
+			return rec.Start(sub)
+		}
+		log.Info("recording shows, to be uploaded to streamlover")
+	}
 
 	dash := &api.Server{
-		Info:      api.Info{Station: cfg.Station.Name, Mode: "standalone", Auth: cfg.Auth, Policy: cfg.Handoff.Policy},
+		Info:      api.Info{Station: cfg.Station.Name, Mode: cfg.Mode(), Auth: cfg.Auth, Policy: cfg.Handoff.Policy, Overrun: cfg.Handoff.Overrun},
 		Operators: map[string]string{},
 		Web:       web.App(),
 		Log:       log,
@@ -130,7 +182,7 @@ func run(configPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("icegator started", "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
+	log.Info("icegator started", "mode", cfg.Mode(), "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
 		"auth", cfg.Auth, "policy", cfg.Handoff.Policy,
 		"station_connection", cfg.Handoff.StationConnection)
 

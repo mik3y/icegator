@@ -18,10 +18,22 @@ upstream:
 auth: forward
 
 handoff:
-  # What happens when a DJ connects while another is on air.
-  # manual: the DJ on air stays until they disconnect or an operator hands off.
-  # auto:   the DJ who connected takes over as soon as their audio is flowing.
+  # What happens when a DJ with a claim to the air is ready while another DJ
+  # is on it. Without a schedule that is any DJ who connects. With one (see
+  # `streamlover` below) it is the DJ whose show is now on.
+  # manual: wait for an operator to hand off. Without a schedule, the next
+  #         DJ also goes on when the one on air disconnects.
+  # auto:   put them on air as soon as their audio is flowing.
+  # The default is manual without a schedule and auto with one.
   policy: manual
+
+  # With a schedule, how long a DJ may stay on air past the end of their
+  # show when the next show's DJ is not ready, or nothing is scheduled next.
+  # A scheduled DJ who is ready takes over whatever this says.
+  # none:   no limit.
+  # strict: none at all. The DJ is taken off as their show ends.
+  # 10m:    that much, as a duration such as 60s or 10m.
+  overrun: none
 
   # What happens to the connection to the station at a handoff. Nothing is
   # re-encoded either way.
@@ -48,6 +60,27 @@ operators:
 levels:
   low_dbfs: -24
   high_dbfs: -5
+
+# --- To follow a StreamLover station's schedule ---
+#
+# The station's DJs sign in with the stream keys StreamLover gives them, and
+# go on air when their show starts. What airs is logged back to StreamLover.
+# Remove `auth` above, give the upstream block a username and password, and
+# make the API key in the station's settings on StreamLover.
+#
+# streamlover:
+#   url: https://streamlover.app
+#   station: example-radio
+#   api_key: ${STREAMLOVER_API_KEY}
+#
+#   # Record what each DJ sends to air and upload it to StreamLover as that
+#   # broadcast's recording. The local copy is deleted once it is there.
+#   upload_recordings: false
+#
+#   # Whether the broadcasts Icegator logs start out private or public.
+#   # Private keeps a show and its recording from listeners until someone
+#   # publishes the episode.
+#   visibility: private
 
 # --- With `auth: local`, replace the upstream block and list your DJs: ---
 #
