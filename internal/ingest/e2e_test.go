@@ -38,6 +38,7 @@ type rig struct {
 type rigOpt struct {
 	forward bool
 	checker auth.Checker // overrides the real station check
+	keep    bool         // hand the station connection from DJ to DJ
 	record  func(controller.Turn) (controller.Recording, error)
 
 	// Setting schedule switches the controller to following a programme.
@@ -65,8 +66,9 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	opt := controller.Options{
 		Upstream: up, Account: upstream.Credentials{Username: "icegator", Password: "shared-pw"},
 		Log: log, RetryDelay: 20 * time.Millisecond,
-		Record:   o.record,
-		Schedule: o.schedule, Policy: o.policy, Now: o.now, OnEvent: o.onEvent,
+		Record:       o.record,
+		KeepUpstream: o.keep,
+		Schedule:     o.schedule, Policy: o.policy, Now: o.now, OnEvent: o.onEvent,
 		Overrun: o.overrun,
 	}
 	if o.schedule != nil {
@@ -127,6 +129,12 @@ func basic(user, pass string) string {
 // connect opens a source connection; requestLine is e.g. "PUT / HTTP/1.1".
 func (r *rig) connect(requestLine, user, pass string, extra ...string) *dj {
 	r.t.Helper()
+	return r.connectFile("../../testdata/tone-2s.mp3", requestLine, user, pass, extra...)
+}
+
+// connectFile is connect for a DJ streaming a particular file.
+func (r *rig) connectFile(file, requestLine, user, pass string, extra ...string) *dj {
+	r.t.Helper()
 	conn, err := net.Dial("tcp", r.addr)
 	if err != nil {
 		r.t.Fatal(err)
@@ -147,7 +155,7 @@ func (r *rig) connect(requestLine, user, pass string, extra ...string) *dj {
 		close(d.done)
 		return d
 	}
-	data, err := os.ReadFile("../../testdata/tone-2s.mp3")
+	data, err := os.ReadFile(file)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -256,7 +264,10 @@ func (r *rig) waitTitle(want upstreamtest.Title) {
 func assertPassthrough(t *testing.T, got []byte) {
 	t.Helper()
 	data, _ := os.ReadFile("../../testdata/tone-2s.mp3")
-	valid := map[string]bool{}
+	// A frame at the station is valid if the DJ sent it, or if it is a
+	// silent stand-in for one the DJ sent, as found at the start of a
+	// stream (see mp3.Lead).
+	valid, carried := map[string]bool{}, map[string]bool{}
 	fr := mp3.NewReader(bytes.NewReader(data))
 	for {
 		f, err := fr.Next()
@@ -264,6 +275,7 @@ func assertPassthrough(t *testing.T, got []byte) {
 			break
 		}
 		valid[string(f.Data)] = true
+		carried[string(mp3.DataArea(f.Data))] = true
 	}
 	fr = mp3.NewReader(bytes.NewReader(got))
 	n, total := 0, 0
@@ -272,7 +284,8 @@ func assertPassthrough(t *testing.T, got []byte) {
 		if err != nil {
 			break
 		}
-		if !valid[string(f.Data)] {
+		lead := mp3.IsCarrier(f.Data) && carried[string(mp3.DataArea(f.Data))]
+		if !valid[string(f.Data)] && !lead {
 			t.Fatalf("frame %d at the station is not one the DJ sent", n)
 		}
 		n++

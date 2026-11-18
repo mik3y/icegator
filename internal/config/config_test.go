@@ -14,7 +14,8 @@ func TestMinimalForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Auth != "forward" || c.Listen.Ingest != ":8000" || c.Handoff.Policy != "manual" {
+	if c.Auth != "forward" || c.Listen.Ingest != ":8000" || c.Handoff.Policy != "manual" ||
+		c.Handoff.StationConnection != "reopen" {
 		t.Fatalf("defaults: %+v", c)
 	}
 	if got := c.FallbackTitle("Night Owl", ""); got != "Night Owl" {
@@ -53,6 +54,8 @@ func TestErrors(t *testing.T) {
 		"local, no djs":   {"auth: local\nupstream: {url: x, username: u, password: p}\n", "no djs"},
 		"local, no acct":  {"auth: local\nupstream: {url: x}\ndjs: [{slug: a, key: AAAA-AAAA}]\n", "upstream.username"},
 		"bad policy":      {"upstream: {url: x}\nhandoff: {policy: maybe}\n", "handoff.policy"},
+		"bad connection":  {"upstream: {url: x}\nhandoff: {station_connection: maybe}\n", "station_connection"},
+		"keep, forward":   {"upstream: {url: x}\nhandoff: {station_connection: keep}\n", "needs auth: local"},
 	} {
 		_, err := Parse([]byte(tc.yaml), env(nil))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

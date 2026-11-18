@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/splatboard/icegator/internal/mp3"
 	"github.com/splatboard/icegator/internal/schedule"
 	"github.com/splatboard/icegator/internal/session"
 	"github.com/splatboard/icegator/internal/upstream"
@@ -103,6 +104,13 @@ type Options struct {
 	// themselves or waits for an operator. Default PolicyManual in a queue and PolicyAuto with a schedule.
 	Policy Policy
 
+	// KeepUpstream carries the station connection over from one DJ to the
+	// next, so the station sees one unbroken source across a handoff
+	// instead of a disconnect and a reconnect. It applies only to DJs who
+	// stream as the shared Account, since a DJ whose own login is
+	// forwarded needs a connection of their own. See handover.go.
+	KeepUpstream bool
+
 	// Schedule switches the controller to following a programme. The
 	// remaining fields in this group apply only then. See scheduled.go.
 	Schedule schedule.Source
@@ -155,6 +163,7 @@ type Controller struct {
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when the current air goroutine has exited
 	turns   int
+	parked  *parked // a station connection waiting for the next DJ
 }
 
 func New(opt Options) *Controller {
@@ -389,6 +398,9 @@ func (c *Controller) Shutdown() {
 	case <-done:
 	case <-time.After(5 * time.Second):
 	}
+	if p := c.claim(); p != nil {
+		p.conn.Close()
+	}
 }
 
 func (c *Controller) find(id string) *entry {
@@ -529,8 +541,23 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 		}
 	}()
 
+	keep := c.opt.KeepUpstream && !forwarded
+
 	for ctx.Err() == nil {
-		conn, err := c.opt.Upstream.Connect(ctx, creds, upstream.Info{Name: e.s.DJ.DisplayName()})
+		// Take over the previous DJ's station connection if they left one.
+		// join is then the format of the stream already on it.
+		var conn *upstream.Conn
+		var join *mp3.Header
+		var err error
+		if p := c.claim(); p != nil && keep {
+			conn, join = p.conn, &p.last
+			log.Info("taking over the station connection")
+		} else {
+			if p != nil {
+				p.conn.Close()
+			}
+			conn, err = c.opt.Upstream.Connect(ctx, creds, upstream.Info{Name: e.s.DJ.DisplayName()})
+		}
 		if errors.Is(err, upstream.ErrUnauthorized) && forwarded {
 			// The DJ's own password is wrong, so retrying is
 			// pointless. Drop them so that someone else gets the air.
@@ -564,7 +591,9 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 				c.opt.OnAccepted(creds)
 			}
 		}
-		log.Info("station connection live")
+		if join == nil {
+			log.Info("station connection live")
+		}
 		if !begun {
 			begin()
 		} else if rec != nil {
@@ -574,9 +603,12 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 
 		// About 13 seconds of slack at 26ms a frame before we are cut off.
 		sub := e.s.Subscribe(512)
+		var sent mp3.Header // the last frame written to this connection
+		starting := true    // the DJ's stream is about to begin on conn
 		result := pumpRebind
 		for result == pumpRebind {
-			result = c.pump(ctx, e, conn, creds, sub, rec, turn)
+			result = c.pump(ctx, e, conn, creds, sub, rec, turn, starting, join, &sent)
+			starting, join = false, nil
 			if result == pumpRebind {
 				// The same audio carries on under a new turn.
 				end()
@@ -585,12 +617,23 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 			}
 		}
 		sub.Close()
-		conn.Close()
-		if result == pumpDone {
+		switch result {
+		case pumpDone:
+			// This DJ is finished. Whoever is next can have the connection.
+			if keep && sent.SampleRate != 0 {
+				c.park(conn, sent)
+			} else {
+				conn.Close()
+			}
 			return
+		case pumpFresh:
+			conn.Close()
+			log.Info("stream format differs from the previous dj's; opening a new station connection")
+		default:
+			conn.Close()
+			log.Warn("upstream connection lost; reconnecting")
+			c.setLink(e, "retrying", "connection lost")
 		}
-		log.Warn("upstream connection lost; reconnecting")
-		c.setLink(e, "retrying", "connection lost")
 	}
 }
 
@@ -600,11 +643,16 @@ const (
 	pumpDone      pumpResult = iota // ctx cancelled or the session ended
 	pumpReconnect                   // the station connection needs re-opening
 	pumpRebind                      // the DJ on air has been given a new turn
+	pumpFresh                       // this stream cannot follow the last one on the connection
 )
 
-// pump copies frames from sub to conn until something changes.
+// pump copies frames from sub to conn until something changes. starting
+// says that the DJ's stream is beginning on conn, as opposed to carrying on
+// under a new turn. A non-nil join means conn already carries another DJ's
+// stream in that format (see handover.go). sent is kept pointing at the
+// header of the last frame written.
 func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, creds upstream.Credentials,
-	sub *session.Sub, rec Recording, turn Turn) pumpResult {
+	sub *session.Sub, rec Recording, turn Turn, starting bool, join *mp3.Header, sent *mp3.Header) pumpResult {
 	sendTitle := func(fromDJ string) {
 		title := fromDJ
 		if title == "" {
@@ -660,9 +708,31 @@ func (c *Controller) pump(ctx context.Context, e *entry, conn *upstream.Conn, cr
 					return pumpReconnect
 				}
 			}
+			header, err := mp3.ParseHeader(frame)
+			if err != nil {
+				continue
+			}
+			if join != nil && !join.Joinable(header) {
+				return pumpFresh
+			}
+			if starting {
+				// The DJ has been streaming for a while, so this frame
+				// may lean on ones the station was never sent. The lead
+				// makes up for them.
+				starting, join = false, nil
+				for _, lead := range mp3.Lead(sub.Before, frame) {
+					if err := conn.Write(lead); err != nil {
+						return pumpReconnect
+					}
+					if rec != nil {
+						rec.Write(lead)
+					}
+				}
+			}
 			if err := conn.Write(frame); err != nil {
 				return pumpReconnect
 			}
+			*sent = header
 			if rec != nil {
 				rec.Write(frame)
 			}

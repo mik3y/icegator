@@ -57,6 +57,13 @@ type Handoff struct {
 	// disconnect or an operator hands off. "auto" puts the newcomer on as
 	// soon as their audio is flowing.
 	Policy string `yaml:"policy"`
+	// StationConnection says what happens to the connection to the
+	// station at a handoff. "reopen" (the default) closes it and opens a
+	// new one for the next DJ, so the station plays its own programming
+	// for a moment in between. "keep" hands the same connection to the
+	// next DJ, so the station hears one continuous source. Nothing is
+	// re-encoded either way. "keep" needs `auth: local`.
+	StationConnection string `yaml:"station_connection"`
 	// ReadyAfter is how much audio a DJ must send before they can go on
 	// air. Default 3s.
 	ReadyAfter time.Duration `yaml:"ready_after"`
@@ -142,6 +149,7 @@ func (c *Config) defaults() {
 	def(&c.Listen.Dashboard, ":8080")
 	def(&c.Auth, "forward")
 	def(&c.Handoff.Policy, "manual")
+	def(&c.Handoff.StationConnection, "reopen")
 	def(&c.Metadata.Fallback, "{dj}")
 	def(&c.StateDir, "state")
 	if c.Handoff.ReadyAfter == 0 {
@@ -188,6 +196,15 @@ func (c *Config) validate() error {
 	}
 	if l := c.Levels; l.SilentDBFS > 0 || l.LowDBFS > 0 || l.HighDBFS > 0 {
 		bad("levels thresholds are dBFS values and must be negative")
+	}
+	switch c.Handoff.StationConnection {
+	case "reopen":
+	case "keep":
+		if c.Auth == "forward" {
+			bad("handoff.station_connection is \"keep\", which needs auth: local; with auth: forward each DJ connects to the station as themselves")
+		}
+	default:
+		bad("handoff.station_connection must be \"reopen\" or \"keep\", not %q", c.Handoff.StationConnection)
 	}
 	if p := c.Handoff.Policy; p != "auto" && p != "manual" {
 		bad("handoff.policy must be \"auto\" or \"manual\", not %q", p)

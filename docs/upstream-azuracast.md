@@ -48,6 +48,14 @@ so it cannot be used as a side-effect-free probe.
 - A listener on the public mount saw no stall longer than a second across
   a disconnect followed by an immediate reconnect.
 
+## Handing one connection from DJ to DJ
+
+With `handoff.station_connection: keep`, two DJs were run through Icegator
+with a handoff between them. The station saw a single source connection
+throughout, stayed live, and showed each DJ's title in turn. A listener on
+the public mount saw no stall. Azuracast treats this as one broadcast by one
+streamer, since its live input never went offline.
+
 ## Not measured
 
 The test station has no AutoDJ content, so what a listener *hears* between

@@ -63,6 +63,7 @@ type Session struct {
 	verified bool
 	title    string
 	subs     map[*Sub]struct{}
+	recent   [][]byte // the last few frames read
 	ended    bool
 }
 
@@ -90,7 +91,11 @@ type Sub struct {
 	Frames chan []byte
 	// Title delivers the latest title; intermediate values may be skipped.
 	Title chan string
-	s     *Session
+	// Before holds the frames that came immediately before the first one
+	// Frames will deliver, oldest first. A stream that starts part-way
+	// through needs them to start cleanly (see mp3.Lead).
+	Before [][]byte
+	s      *Session
 }
 
 // Subscribe starts delivering frames from the next one received. buffer is
@@ -99,6 +104,7 @@ func (s *Session) Subscribe(buffer int) *Sub {
 	sub := &Sub{Frames: make(chan []byte, buffer), Title: make(chan string, 1), s: s}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sub.Before = append([][]byte(nil), s.recent...)
 	if s.ended {
 		close(sub.Frames)
 		return sub
@@ -146,6 +152,13 @@ func (s *Session) Run(r io.Reader) error {
 		s.bytes += int64(len(data))
 		s.audio += f.Header.Duration()
 		s.lastData = time.Now()
+		// Frames are never modified once read, so keeping the last few
+		// costs only the slice headers.
+		if len(s.recent) == mp3.MaxLead {
+			copy(s.recent, s.recent[1:])
+			s.recent = s.recent[:mp3.MaxLead-1]
+		}
+		s.recent = append(s.recent, data)
 		becameReady := !s.ready && s.audio >= s.ReadyAfter
 		if becameReady {
 			s.ready = true

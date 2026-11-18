@@ -74,9 +74,10 @@ func run(configPath string, log *slog.Logger) error {
 	}
 
 	opt := controller.Options{
-		Upstream: up,
-		Account:  upstream.Credentials{Username: cfg.Upstream.Username, Password: cfg.Upstream.Password},
-		Policy:   controller.Policy(cfg.Handoff.Policy),
+		Upstream:     up,
+		Account:      upstream.Credentials{Username: cfg.Upstream.Username, Password: cfg.Upstream.Password},
+		Policy:       controller.Policy(cfg.Handoff.Policy),
+		KeepUpstream: cfg.Handoff.StationConnection == "keep",
 		FallbackTitle: func(t controller.Turn) string {
 			show := ""
 			if t.Show != nil {
@@ -130,7 +131,8 @@ func run(configPath string, log *slog.Logger) error {
 		return err
 	}
 	log.Info("icegator started", "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
-		"auth", cfg.Auth, "policy", cfg.Handoff.Policy)
+		"auth", cfg.Auth, "policy", cfg.Handoff.Policy,
+		"station_connection", cfg.Handoff.StationConnection)
 
 	thresholds := levels.Thresholds{Silent: cfg.Levels.SilentDBFS, Low: cfg.Levels.LowDBFS, High: cfg.Levels.HighDBFS}
 	srv := &ingest.Server{

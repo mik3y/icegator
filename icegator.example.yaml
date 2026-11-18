@@ -23,6 +23,16 @@ handoff:
   # auto:   the DJ who connected takes over as soon as their audio is flowing.
   policy: manual
 
+  # What happens to the connection to the station at a handoff. Nothing is
+  # re-encoded either way.
+  # reopen: close it and open a new one for the next DJ. The station plays
+  #         its own programming for a moment in between.
+  # keep:   hand the same connection to the next DJ, so the station hears
+  #         one continuous source. Needs `auth: local`. DJs whose sample
+  #         rate or channel count differ from the previous DJ's still get a
+  #         new connection.
+  station_connection: reopen
+
 metadata:
   # Shown when the DJ's software sends no track titles.
   fallback: "{dj}"
