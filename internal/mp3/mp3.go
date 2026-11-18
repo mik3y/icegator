@@ -153,6 +153,36 @@ func (h Header) compatible(o Header) bool {
 	return h.Version == o.Version && h.Layer == o.Layer && h.SampleRate == o.SampleRate
 }
 
+// Joinable reports whether a stream with header o can follow one with
+// header h on the same connection without the decoder at the far end having
+// to reconfigure. Bitrate may differ. Sample rate and channel count may not.
+func (h Header) Joinable(o Header) bool {
+	return h.compatible(o) && h.Channels == o.Channels
+}
+
+// MainDataBegin reports how many bytes of audio data a Layer III frame
+// borrows from the frames before it (the "bit reservoir"). A frame that
+// borrows nothing can be decoded with no knowledge of what came earlier,
+// which makes it a clean place to start a stream or to join one stream onto
+// another. ok is false if the frame is not Layer III or is too short.
+func MainDataBegin(frame []byte) (n int, ok bool) {
+	h, err := ParseHeader(frame)
+	if err != nil || h.Layer != 3 {
+		return 0, false
+	}
+	at := HeaderSize
+	if h.Protected {
+		at += 2 // the CRC sits between the header and the side information
+	}
+	if len(frame) < at+2 {
+		return 0, false
+	}
+	if h.Version == MPEG1 {
+		return int(frame[at])<<1 | int(frame[at+1])>>7, true // 9 bits
+	}
+	return int(frame[at]), true // 8 bits
+}
+
 // Frame is one complete MPEG audio frame.
 type Frame struct {
 	Header Header

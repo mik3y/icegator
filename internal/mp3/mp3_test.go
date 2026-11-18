@@ -101,3 +101,48 @@ func TestReaderResyncsAfterCorruption(t *testing.T) {
 		t.Fatalf("got %d frames, want about %d", got, want)
 	}
 }
+
+func TestMainDataBegin(t *testing.T) {
+	// The first frame of any stream has nothing before it to borrow from.
+	// An encoder starts borrowing soon after, so later frames do.
+	r := NewReader(bytes.NewReader(fixture(t)))
+	first, borrowing, clean := true, 0, 0
+	for {
+		f, err := r.Next()
+		if err != nil {
+			break
+		}
+		n, ok := MainDataBegin(f.Data)
+		if !ok || n < 0 || n > 511 {
+			t.Fatalf("frame: n=%d ok=%v", n, ok)
+		}
+		if first && n != 0 {
+			t.Fatalf("first frame borrows %d bytes", n)
+		}
+		first = false
+		if n == 0 {
+			clean++
+		} else {
+			borrowing++
+		}
+	}
+	if borrowing == 0 || clean == 0 {
+		t.Fatalf("%d frames borrow, %d do not; the fixture should have both", borrowing, clean)
+	}
+	if _, ok := MainDataBegin([]byte{0xFF, 0xFB, 0x90}); ok {
+		t.Fatal("accepted a truncated frame")
+	}
+}
+
+func TestJoinable(t *testing.T) {
+	stereo44, _ := ParseHeader([]byte{0xFF, 0xFB, 0x90, 0x64})
+	stereo44at192, _ := ParseHeader([]byte{0xFF, 0xFB, 0xB0, 0x64})
+	mono44, _ := ParseHeader([]byte{0xFF, 0xFB, 0x90, 0xC4})
+	stereo48, _ := ParseHeader([]byte{0xFF, 0xFB, 0x94, 0x64})
+	if !stereo44.Joinable(stereo44at192) {
+		t.Error("a change of bitrate alone should be joinable")
+	}
+	if stereo44.Joinable(mono44) || stereo44.Joinable(stereo48) {
+		t.Error("a change of channels or sample rate should not be joinable")
+	}
+}
