@@ -170,6 +170,22 @@ The loudness, in dBFS averaged over a few seconds, behind the dashboard's verdic
 
 One value, not a block. The directory for what has to survive a restart, which with the `streamlover` provider is recordings waiting to be uploaded and the last copy of the station's DJs and schedule. Default `state`, relative to where Icegator is started.
 
+## Running the container
+
+Each release is published as an image, `ghcr.io/mik3y/icegator`, tagged with its version (`v0.5.0`), its minor series (`0.5`) and `latest`. It holds the one binary, dashboard included.
+
+```
+docker run \
+  -v ./icegator.yaml:/etc/icegator/icegator.yaml \
+  -v icegator-state:/data \
+  -p 8000:8000 -p 8080:8080 \
+  ghcr.io/mik3y/icegator:v0.5.0
+```
+
+The image reads its configuration from `/etc/icegator/icegator.yaml` and starts in `/data`, so with the default `state_dir` its state is kept in `/data/state`. Anything the config refers to as `${NAME}` can be passed as an ordinary environment variable. The flags work as usual, such as `docker run -i ghcr.io/mik3y/icegator -hash-password`.
+
+`icegator -version` prints the release a binary was built from. The same version is shown at the foot of the dashboard and is on the image as `ICEGATOR_VERSION` and the `org.opencontainers.image.version` label.
+
 ## Developing
 
 ```
@@ -183,3 +199,19 @@ cd web && bun run sim                 # dashboard alone, against a simulated sta
 `bun run sim` needs no Icegator and no streams. The dashboard runs against a station simulated in the browser, and a toolbar at the bottom of the page connects and drops DJs, sets their levels, and switches between states that are awkward to produce for real, such as a lost station connection or a show overrunning. The simulator is not part of the built dashboard.
 
 `icesource` is a small source client that streams an MP3 in real time and can send title updates, standing in for DJ software.
+
+### Releasing
+
+```
+make bump                             # v1.0.0 -> v1.0.1
+make bump-minor                       # v1.0.1 -> v1.1.0
+make bump-major                       # v1.1.0 -> v2.0.0
+```
+
+The version lives in git tags, and the first release is `v1.0.0` whichever target is used.
+
+Note changes in `CHANGELOG.md` as they are made, under the `## Current version (unreleased)` heading at the top. A release renames that heading to the version and the date, such as `## v1.0.1 (2026-11-19)`. Add the heading again for the next change after a release.
+
+Each target makes one commit on `main` holding that changelog edit, with the version as its message. It tags the commit and pushes both, which sets off the release workflow. That publishes the image and then creates the GitHub release.
+
+The targets run `bun run bump [minor|major]` in `web/`. Run that with `--dry-run` to see the next version without tagging anything.

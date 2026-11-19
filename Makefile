@@ -1,6 +1,6 @@
 # `make` builds the dashboard app and then the binary that embeds it.
 
-.PHONY: build web test lint dev-station clean
+.PHONY: build web test lint dev-station bump bump-minor bump-major clean
 
 # The version stamped into the binary. On a release tag it is v0.5.0, and
 # between releases it looks like v0.5.0-3-gd85f798.
@@ -22,6 +22,17 @@ test:
 # A stand-in for the station, for running icegator locally.
 dev-station:
 	go run ./cmd/fakestation
+
+# Cut a release. `make bump` raises the last number of the version, and the
+# other two raise the minor or major number.
+bump:
+	cd web && bun run bump
+
+bump-minor:
+	cd web && bun run bump minor
+
+bump-major:
+	cd web && bun run bump major
 
 clean:
 	rm -rf bin web/dist/assets web/dist/index.html

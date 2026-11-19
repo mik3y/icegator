@@ -7,8 +7,9 @@
     "sim": "vite --mode sim",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src/",
-    "lint:fix": "biome check --write src/"
+    "lint": "biome check src/ scripts/",
+    "lint:fix": "biome check --write src/ scripts/",
+    "bump": "bun scripts/bump.ts"
   },
   "trustedDependencies": ["@biomejs/biome"],
   "dependencies": {

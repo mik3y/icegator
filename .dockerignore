@@ -1,0 +1,17 @@
+# These stay out of the build context. Local configuration and secrets must
+# never end up in an image.
+.git
+.github
+.env
+.env.*
+icegator.yaml
+/bin
+/state
+/assets
+/docs
+/testdata/tmp
+*.spool
+PLAN.md
+web/node_modules
+web/dist/assets
+web/dist/index.html
