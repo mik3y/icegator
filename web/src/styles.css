@@ -148,6 +148,14 @@ button.quiet:hover:not(:disabled) {
   gap: 0.25rem;
 }
 
+.colophon {
+  margin-top: 3rem;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  opacity: 0.7;
+  text-align: center;
+}
+
 .notice {
   padding: 0.75rem 1rem;
   border-radius: var(--radius);

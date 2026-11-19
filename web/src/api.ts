@@ -58,6 +58,8 @@ export interface Info {
   policy: "auto" | "manual";
   /** With a schedule, "none", "strict" or a duration such as "10m". */
   overrun?: string;
+  /** The release Icegator was built from, such as "v0.5.0". */
+  version?: string;
 }
 
 export interface Status {

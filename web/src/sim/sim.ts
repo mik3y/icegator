@@ -174,6 +174,7 @@ function status(): Status {
       scheduled: settings.scheduled,
       policy: settings.policy,
       overrun: settings.scheduled ? "none" : undefined,
+      version: "sim",
     },
     djs: sim.djs.map(
       (d): Dj => ({

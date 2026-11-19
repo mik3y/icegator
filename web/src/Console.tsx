@@ -444,6 +444,10 @@ export default function Console({
         )}
       </main>
 
+      {status.info.version && (
+        <footer className="colophon">Icegator {status.info.version}</footer>
+      )}
+
       {message && (
         <p className="toast" role="alert">
           {message}
