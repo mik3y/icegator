@@ -85,7 +85,11 @@ jobs:
       - name: Check that the dashboard is in the binary
         run: |
           cat > ci.yaml <<'YAML'
-          upstream: {url: "http://127.0.0.1:1/"}
+          upstream: {url: "http://127.0.0.1:1/", username: source, password: hackme}
+          provider:
+            static:
+              djs:
+                - {slug: ci, name: CI, key: AAAA-2222}
           listen: {ingest: "127.0.0.1:18000", dashboard: "127.0.0.1:18080"}
           operators:
             - {username: ci, password_hash: "$2a$10$abcdefghijklmnopqrstuuJ1cQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0rQ0"}
