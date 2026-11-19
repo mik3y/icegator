@@ -2,6 +2,8 @@
 
 Manages streamer handoffs against a streaming radio station.
 
+![The Icegator dashboard, with one DJ on air and another waiting](assets/screenshot.png)
+
 ## Overview
 
 Icegator simplifies the station operations around show handoffs on a streaming radio station, such as one hosted by [Azuracast](https://www.azuracast.com/).
