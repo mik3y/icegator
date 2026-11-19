@@ -2,8 +2,12 @@
 
 .PHONY: build web test lint dev-station clean
 
+# The version stamped into the binary. On a release tag it is v0.5.0, and
+# between releases it looks like v0.5.0-3-gd85f798.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 build: web
-	go build -o bin/ ./cmd/...
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/ ./cmd/...
 
 web:
 	cd web && bun install --frozen-lockfile

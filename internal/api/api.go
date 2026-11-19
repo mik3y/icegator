@@ -44,6 +44,8 @@ type Info struct {
 	// Overrun is "none", "strict" or a duration. It applies when there is
 	// a schedule.
 	Overrun string `json:"overrun,omitempty"`
+	// Version is the release the binary was built from.
+	Version string `json:"version,omitempty"`
 }
 
 // Server is the dashboard's HTTP handler.

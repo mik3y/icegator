@@ -33,12 +33,22 @@ import (
 	"github.com/splatboard/icegator/web"
 )
 
+// version is the release this binary was built from, such as "v0.5.0". The
+// build sets it through -ldflags.
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "icegator.yaml", "path to the configuration file")
 	envFile := flag.String("env-file", "", "read environment variables from this file, instead of .env.local and .env beside the config")
 	newKey := flag.Bool("new-key", false, "print a new DJ stream key and exit")
 	hashPassword := flag.Bool("hash-password", false, "read an operator password from stdin, print its hash for the config, and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	if *hashPassword {
 		pw, _ := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -163,7 +173,7 @@ func run(configPath, envFile string, log *slog.Logger) error {
 	}
 
 	dash := &api.Server{
-		Info:      api.Info{Station: cfg.Station.Name, Provider: cfg.Provider.Name(), Scheduled: cfg.Provider.Scheduled(), Policy: cfg.Handoff.Policy, Overrun: cfg.Handoff.Overrun},
+		Info:      api.Info{Station: cfg.Station.Name, Provider: cfg.Provider.Name(), Scheduled: cfg.Provider.Scheduled(), Policy: cfg.Handoff.Policy, Overrun: cfg.Handoff.Overrun, Version: version},
 		Operators: map[string]string{},
 		Web:       web.App(),
 		Log:       log,
@@ -180,7 +190,7 @@ func run(configPath, envFile string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("icegator started", "provider", cfg.Provider.Name(), "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
+	log.Info("icegator started", "version", version, "provider", cfg.Provider.Name(), "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
 		"policy", cfg.Handoff.Policy,
 		"station_connection", cfg.Handoff.StationConnection)
 
