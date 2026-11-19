@@ -132,5 +132,5 @@ func (l *Local) Authenticate(_ context.Context, username, password, ip string) (
 		l.limit.Fail(ipKey, userKey)
 		return session.Identity{}, fmt.Errorf("%w: %s", ErrDenied, why)
 	}
-	return session.Identity{Username: dj.Slug, Name: dj.Name, Verified: true}, nil
+	return session.Identity{Username: dj.Slug, Name: dj.Name}, nil
 }

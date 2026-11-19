@@ -27,7 +27,7 @@ func unset(t *testing.T, names ...string) {
 func TestLoadEnvBesideTheConfig(t *testing.T) {
 	unset(t, "IG_TEST_URL", "IG_TEST_PW", "IG_TEST_SHARED")
 	dir := t.TempDir()
-	cfg := write(t, dir, "icegator.yaml", "upstream: {url: \"${IG_TEST_URL}\", username: u, password: \"${IG_TEST_PW}\"}\nauth: local\ndjs: [{slug: a, key: AAAA-AAAA}]\n")
+	cfg := write(t, dir, "icegator.yaml", "upstream: {url: \"${IG_TEST_URL}\", username: u, password: \"${IG_TEST_PW}\"}\nprovider: {static: {djs: [{slug: a, key: AAAA-AAAA}]}}\n")
 	write(t, dir, ".env", "IG_TEST_URL=http://from-env:8005/\nIG_TEST_SHARED=from-env\n")
 	write(t, dir, ".env.local", "IG_TEST_PW='s3cret # not a comment'\nIG_TEST_SHARED=from-local\n")
 

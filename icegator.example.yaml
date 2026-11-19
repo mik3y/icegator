@@ -10,41 +10,73 @@ listen:
   ingest: ":8000"        # DJs point their streaming software here
   dashboard: ":8080"
 
+# Where the audio goes, and the one account Icegator streams as, whoever the
+# DJ on air is.
 upstream:
   # The station's live-DJ (source) address, including the mount.
   url: http://azuracast.example.com:8005/
+  username: icegator
+  password: ${UPSTREAM_PASSWORD}
 
-# forward: DJs log in with their own station account; Icegator passes it on.
-# local:   DJs log in with a stream key listed below; Icegator streams to the
-#          station as the single account given under `upstream`.
-auth: forward
+# Where the station's DJs come from. Exactly one provider is set here, and
+# it decides how Icegator runs.
+provider:
+  # static: the DJs are listed here, each with a stream key they sign in
+  # with. There is no schedule. DJs queue for the air in the order they
+  # connect.
+  static:
+    djs:                    # make keys with: icegator -new-key
+      - slug: nightowl
+        name: Night Owl
+        key: A573-9BZX
+
+  # streamlover: the DJs, their stream keys and the schedule come from a
+  # StreamLover station. A DJ goes on air when a show they host is
+  # scheduled, and what airs is logged back to StreamLover. To use it,
+  # remove `static` above. Make the API key in the station's settings on
+  # StreamLover.
+  #
+  # streamlover:
+  #   url: https://streamlover.app
+  #   station: example-radio
+  #   api_key: ${STREAMLOVER_API_KEY}
+  #
+  #   # Record what each DJ sends to air and upload it to StreamLover as
+  #   # that broadcast's recording. The local copy is deleted once it is
+  #   # there.
+  #   upload_recordings: false
+  #
+  #   # Whether the broadcasts Icegator logs start out private or public.
+  #   # Private keeps a show and its recording from listeners until someone
+  #   # publishes the episode.
+  #   visibility: private
 
 handoff:
   # What happens when a DJ with a claim to the air is ready while another DJ
-  # is on it. Without a schedule that is any DJ who connects. With one (see
-  # `streamlover` below) it is the DJ whose show is now on.
+  # is on it. Without a schedule that is any DJ who connects. With one it is
+  # the DJ whose show is now on.
   # manual: wait for an operator to hand off. Without a schedule, the next
   #         DJ also goes on when the one on air disconnects.
   # auto:   put them on air as soon as their audio is flowing.
   # The default is manual without a schedule and auto with one.
   policy: manual
 
-  # With a schedule, how long a DJ may stay on air past the end of their
-  # show when the next show's DJ is not ready, or nothing is scheduled next.
-  # A scheduled DJ who is ready takes over whatever this says.
-  # none:   no limit.
+  # Only for a provider with a schedule. How long a DJ may stay on air past
+  # the end of their show when the next show's DJ is not ready, or nothing
+  # is scheduled next. A scheduled DJ who is ready takes over whatever this
+  # says.
+  # none:   no limit. This is the default.
   # strict: none at all. The DJ is taken off as their show ends.
   # 10m:    that much, as a duration such as 60s or 10m.
-  overrun: none
+  # overrun: none
 
   # What happens to the connection to the station at a handoff. Nothing is
   # re-encoded either way.
   # reopen: close it and open a new one for the next DJ. The station plays
   #         its own programming for a moment in between.
   # keep:   hand the same connection to the next DJ, so the station hears
-  #         one continuous source. Needs `auth: local`. DJs whose sample
-  #         rate or channel count differ from the previous DJ's still get a
-  #         new connection.
+  #         one continuous source. DJs whose sample rate or channel count
+  #         differ from the previous DJ's still get a new connection.
   station_connection: reopen
 
 metadata:
@@ -62,36 +94,3 @@ operators:
 levels:
   low_dbfs: -24
   high_dbfs: -5
-
-# --- To follow a StreamLover station's schedule ---
-#
-# The station's DJs sign in with the stream keys StreamLover gives them, and
-# go on air when their show starts. What airs is logged back to StreamLover.
-# Remove `auth` above, give the upstream block a username and password, and
-# make the API key in the station's settings on StreamLover.
-#
-# streamlover:
-#   url: https://streamlover.app
-#   station: example-radio
-#   api_key: ${STREAMLOVER_API_KEY}
-#
-#   # Record what each DJ sends to air and upload it to StreamLover as that
-#   # broadcast's recording. The local copy is deleted once it is there.
-#   upload_recordings: false
-#
-#   # Whether the broadcasts Icegator logs start out private or public.
-#   # Private keeps a show and its recording from listeners until someone
-#   # publishes the episode.
-#   visibility: private
-
-# --- With `auth: local`, replace the upstream block and list your DJs: ---
-#
-# upstream:
-#   url: http://azuracast.example.com:8005/
-#   username: icegator
-#   password: ${UPSTREAM_PASSWORD}
-#
-# djs:                      # make keys with: icegator -new-key
-#   - slug: nightowl
-#     name: Night Owl
-#     key: A573-9BZX

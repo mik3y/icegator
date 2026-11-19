@@ -194,22 +194,6 @@ func (c *Client) SetTitle(ctx context.Context, creds Credentials, title string) 
 	return nil
 }
 
-// Check asks the station whether it accepts creds, without opening a source
-// connection. It works by sending a metadata update, which stations
-// authenticate before doing anything else. A 401 or 403 means rejected and
-// any other reply means accepted (see docs/upstream-azuracast.md).
-//
-// The update is a real one if a source is live, so title must be whatever
-// is already showing. The caller passes the current on-air title, or any
-// harmless text when nothing is on air.
-func (c *Client) Check(ctx context.Context, creds Credentials, title string) (ok bool, err error) {
-	status, err := c.metadata(ctx, creds, title)
-	if err != nil {
-		return false, err
-	}
-	return status != 401 && status != 403, nil
-}
-
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\r' || r == '\n' {

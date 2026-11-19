@@ -46,7 +46,7 @@ func setup(t *testing.T) (*httptest.Server, *http.Client, *fakeGate, *Server) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("hunter22"), bcrypt.MinCost)
 	gate := &fakeGate{}
 	s := &Server{
-		Info: Info{Station: "Test FM", Mode: "standalone"}, Gate: gate,
+		Info: Info{Station: "Test FM", Provider: "static"}, Gate: gate,
 		Operators:     map[string]string{"mike": string(hash)},
 		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LevelInterval: 5 * time.Millisecond, StatusInterval: time.Hour,

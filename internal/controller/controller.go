@@ -96,8 +96,7 @@ type Event struct {
 // Options configure a Controller.
 type Options struct {
 	Upstream Upstream
-	// Account is the station login used for DJs whose own credentials are
-	// not forwarded.
+	// Account is the station login Icegator streams as.
 	Account upstream.Credentials
 
 	// Policy says whether a DJ with a claim to the air takes it by
@@ -106,9 +105,7 @@ type Options struct {
 
 	// KeepUpstream carries the station connection over from one DJ to the
 	// next, so the station sees one unbroken source across a handoff
-	// instead of a disconnect and a reconnect. It applies only to DJs who
-	// stream as the shared Account, since a DJ whose own login is
-	// forwarded needs a connection of their own. See handover.go.
+	// instead of a disconnect and a reconnect. See handover.go.
 	KeepUpstream bool
 
 	// Schedule switches the controller to following a programme. The
@@ -124,10 +121,6 @@ type Options struct {
 	Record func(Turn) (Recording, error)
 	// OnEvent, if set, is told when turns start and end and tracks change.
 	OnEvent func(Event)
-	// OnAccepted and OnRejected report how the station treated forwarded
-	// credentials. Optional.
-	OnAccepted func(upstream.Credentials)
-	OnRejected func(upstream.Credentials)
 	// OnChange is called (without locks held) whenever state changes.
 	OnChange func()
 	Log      *slog.Logger
@@ -472,13 +465,6 @@ func showName(s *schedule.Show) string {
 	return s.Name
 }
 
-func (c *Controller) creds(e *entry) upstream.Credentials {
-	if e.s.DJ.Upstream != nil {
-		return *e.s.DJ.Upstream
-	}
-	return c.opt.Account
-}
-
 func (c *Controller) setLink(e *entry, link, errText string) {
 	c.mu.Lock()
 	if c.onAir == e {
@@ -500,8 +486,7 @@ func (c *Controller) emit(kind string, turn Turn, title string) {
 // air keeps e's frames flowing to the station until ctx is cancelled or the
 // session ends, reconnecting if the station drops us.
 func (c *Controller) air(ctx context.Context, e *entry) {
-	creds := c.creds(e)
-	forwarded := e.s.DJ.Upstream != nil
+	creds := c.opt.Account
 	delay := c.opt.RetryDelay
 	log := c.opt.Log.With("dj", e.s.DJ.Username, "session", e.s.ID)
 
@@ -541,15 +526,13 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 		}
 	}()
 
-	keep := c.opt.KeepUpstream && !forwarded
-
 	for ctx.Err() == nil {
 		// Take over the previous DJ's station connection if they left one.
 		// join is then the format of the stream already on it.
 		var conn *upstream.Conn
 		var join *mp3.Header
 		var err error
-		if p := c.claim(); p != nil && keep {
+		if p := c.claim(); p != nil && c.opt.KeepUpstream {
 			conn, join = p.conn, &p.last
 			log.Info("taking over the station connection")
 		} else {
@@ -557,16 +540,6 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 				p.conn.Close()
 			}
 			conn, err = c.opt.Upstream.Connect(ctx, creds, upstream.Info{Name: e.s.DJ.DisplayName()})
-		}
-		if errors.Is(err, upstream.ErrUnauthorized) && forwarded {
-			// The DJ's own password is wrong, so retrying is
-			// pointless. Drop them so that someone else gets the air.
-			log.Warn("station rejected dj's credentials; disconnecting them")
-			if c.opt.OnRejected != nil {
-				c.opt.OnRejected(creds)
-			}
-			e.s.Close()
-			return
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -585,12 +558,6 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 			continue
 		}
 		delay = c.opt.RetryDelay
-		if forwarded {
-			e.s.SetVerified()
-			if c.opt.OnAccepted != nil {
-				c.opt.OnAccepted(creds)
-			}
-		}
 		if join == nil {
 			log.Info("station connection live")
 		}
@@ -620,7 +587,7 @@ func (c *Controller) air(ctx context.Context, e *entry) {
 		switch result {
 		case pumpDone:
 			// This DJ is finished. Whoever is next can have the connection.
-			if keep && sent.SampleRate != 0 {
+			if c.opt.KeepUpstream && sent.SampleRate != 0 {
 				c.park(conn, sent)
 			} else {
 				conn.Close()

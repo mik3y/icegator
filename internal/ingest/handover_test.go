@@ -148,20 +148,6 @@ func TestDifferentFormatGetsItsOwnConnection(t *testing.T) {
 	}
 }
 
-func TestForwardedLoginsAlwaysReconnect(t *testing.T) {
-	// Each DJ has to appear to the station as themselves, so there is no
-	// connection that could be handed on.
-	r := newRig(t, rigOpt{forward: true, keep: true})
-	alice := r.put("alice", "alice-pw")
-	r.waitLive(1)
-	r.put("bob", "bob-pw")
-	r.waitState("bob", controller.StateQueued)
-	alice.hangUp()
-	if src := r.waitLive(2); src.Username != "bob" {
-		t.Fatalf("second connection is %q, want bob", src.Username)
-	}
-}
-
 // wholeFrames counts the complete frames in a stream.
 func wholeFrames(stream []byte) int {
 	n := 0

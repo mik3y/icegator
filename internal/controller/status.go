@@ -13,7 +13,6 @@ type DJ struct {
 	Username    string        `json:"username"`
 	Name        string        `json:"name"`
 	State       State         `json:"state"`
-	Verified    bool          `json:"verified"`
 	Remote      string        `json:"remote"`
 	UserAgent   string        `json:"user_agent"`
 	ConnectedAt time.Time     `json:"connected_at"`
@@ -72,7 +71,7 @@ func (c *Controller) Status() Status {
 	for _, e := range c.entries {
 		d := DJ{
 			SessionID: e.s.ID, Username: e.s.DJ.Username, Name: e.s.DJ.DisplayName(),
-			Verified: e.s.Verified(), Remote: e.s.Remote, UserAgent: e.s.UserAgent,
+			Remote: e.s.Remote, UserAgent: e.s.UserAgent,
 			ConnectedAt: e.s.ConnectedAt, Title: e.s.Title(), Stats: e.s.Stats(), Level: e.s.Level.Load(),
 		}
 		if c.opt.Schedule != nil {
@@ -142,33 +141,6 @@ func (c *Controller) Levels() map[string]*session.Level {
 		}
 	}
 	return m
-}
-
-// OnAirTitle is the title the station is showing for the DJ on air through
-// Icegator, and whether anyone is.
-func (c *Controller) OnAirTitle() (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.onAir == nil || c.onAir.link != "live" {
-		return "", false
-	}
-	return c.onAir.title, true
-}
-
-// Unverified counts connected sessions whose credentials are not known to
-// work, in total and from one address.
-func (c *Controller) Unverified(ip string) (total, fromIP int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, e := range c.entries {
-		if !e.s.Verified() {
-			total++
-			if remoteIP(e.s.Remote) == ip {
-				fromIP++
-			}
-		}
-	}
-	return
 }
 
 // Find returns a connected session whose identity satisfies match,

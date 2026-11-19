@@ -230,21 +230,11 @@ func (s *Server) metadata(conn net.Conn, req *request, ip string) {
 	}
 	user, pass = auth.SplitShoutcast(user, pass)
 
-	// A DJ who is already connected has already proved who they are with
-	// these exact credentials, so match the session before (and instead
-	// of) asking the authenticator again.
-	sess := s.Gate.Find(func(id session.Identity) bool {
-		return id.Upstream != nil && id.Upstream.Username == user && id.Upstream.Password == pass
-	})
-	if sess == nil {
-		id, ok := s.authenticate(conn, user, pass, ip)
-		if !ok {
-			return
-		}
-		sess = s.Gate.Find(func(other session.Identity) bool {
-			return other.Upstream == nil && other.Username == id.Username
-		})
+	id, ok := s.authenticate(conn, user, pass, ip)
+	if !ok {
+		return
 	}
+	sess := s.Gate.Find(func(other session.Identity) bool { return other.Username == id.Username })
 	if sess == nil {
 		respond(conn, "400 Bad Request", "", "No stream is connected for this login.")
 		return

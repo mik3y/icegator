@@ -12,19 +12,12 @@ import (
 	"time"
 
 	"github.com/splatboard/icegator/internal/mp3"
-	"github.com/splatboard/icegator/internal/upstream"
 )
 
 // Identity is who a session belongs to, as established at connect time.
 type Identity struct {
 	Username string
 	Name     string // display name; falls back to Username
-	// Upstream holds the DJ's own credentials when they are forwarded to
-	// the station. Nil means the configured upstream account is used.
-	Upstream *upstream.Credentials
-	// Verified reports whether the credentials are known to be accepted
-	// by whoever checks them (always true for locally checked keys).
-	Verified bool
 }
 
 func (i Identity) DisplayName() string {
@@ -60,7 +53,6 @@ type Session struct {
 	audio    time.Duration
 	lastData time.Time
 	ready    bool
-	verified bool
 	title    string
 	subs     map[*Sub]struct{}
 	recent   [][]byte // the last few frames read
@@ -79,7 +71,6 @@ func New(dj Identity, remote, userAgent string, closer io.Closer) *Session {
 		ConnectedAt: time.Now(),
 		ReadyAfter:  3 * time.Second,
 		closer:      closer,
-		verified:    dj.Verified,
 		subs:        map[*Sub]struct{}{},
 	}
 }
@@ -189,18 +180,6 @@ func (s *Session) Ready() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ready
-}
-
-func (s *Session) Verified() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.verified
-}
-
-func (s *Session) SetVerified() {
-	s.mu.Lock()
-	s.verified = true
-	s.mu.Unlock()
 }
 
 // Title is the last track title the DJ sent, or "".

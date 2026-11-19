@@ -15,24 +15,50 @@ import (
 
 type Config struct {
 	Station Station `yaml:"station"`
-	// Streamlover, when set, has Icegator take the station's DJs and
-	// schedule from a StreamLover station and report what airs back to it.
-	Streamlover Streamlover `yaml:"streamlover"`
-	Listen      Listen      `yaml:"listen"`
-	Upstream    Upstream    `yaml:"upstream"`
-	// Auth is "forward" or "local". Under "forward", the default, DJs' own
-	// station logins are passed through. Under "local", Icegator checks
-	// the keys under `djs`.
-	Auth     string   `yaml:"auth"`
+	// Provider says where the station's DJs come from. It is required.
+	Provider Provider `yaml:"provider"`
+	Listen   Listen   `yaml:"listen"`
+	Upstream Upstream `yaml:"upstream"`
 	Handoff  Handoff  `yaml:"handoff"`
 	Metadata Metadata `yaml:"metadata"`
-	DJs      []DJ     `yaml:"djs"`
 	// Operators may sign in to the dashboard. With none listed, the
 	// dashboard is not served.
 	Operators []Operator `yaml:"operators"`
 	Levels    Levels     `yaml:"levels"`
 	// StateDir holds what must survive a restart. Default "./state".
 	StateDir string `yaml:"state_dir"`
+}
+
+// Provider holds the settings of the one provider in use, so exactly one
+// of its fields is set. A provider supplies the DJs and their stream keys,
+// and may supply a schedule. What it supplies decides how Icegator runs,
+// which is why nothing else in the config chooses a mode.
+type Provider struct {
+	// Static lists the DJs in this file. There is no schedule, so the
+	// DJs queue for the air in the order they connect.
+	Static *Static `yaml:"static"`
+	// Streamlover takes the DJs and the schedule from a StreamLover
+	// station, and reports what airs back to it.
+	Streamlover *Streamlover `yaml:"streamlover"`
+}
+
+// Name is the provider in use, "static" or "streamlover". It is empty
+// when the config sets none, or more than one.
+func (p Provider) Name() string {
+	switch {
+	case p.Static != nil && p.Streamlover == nil:
+		return "static"
+	case p.Streamlover != nil && p.Static == nil:
+		return "streamlover"
+	}
+	return ""
+}
+
+// Scheduled reports whether the provider supplies a schedule.
+func (p Provider) Scheduled() bool { return p.Name() == "streamlover" }
+
+type Static struct {
+	DJs []DJ `yaml:"djs"`
 }
 
 type Station struct {
@@ -68,8 +94,8 @@ type Upstream struct {
 	// URL is the station's source address including the mount, e.g.
 	// http://azuracast.example.com:8005/
 	URL string `yaml:"url"`
-	// Username and Password are the account Icegator streams as. Needed
-	// with `auth: local` and unused with `auth: forward`.
+	// Username and Password are the account Icegator streams as, whoever
+	// the DJ on air is.
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 }
@@ -82,7 +108,8 @@ type Handoff struct {
 	// connected, and with a schedule it is the DJ whose show is now on.
 	// The default is "manual" in a queue and "auto" with a schedule.
 	Policy string `yaml:"policy"`
-	// Overrun applies when there is a schedule. It says how long a DJ
+	// Overrun is for a provider with a schedule, and is an error with one
+	// that has none. It says how long a DJ
 	// may stay on air past the end of their show when the next show's DJ
 	// is not ready, or nothing is scheduled next. A scheduled DJ who is
 	// ready takes over whatever this says.
@@ -96,7 +123,7 @@ type Handoff struct {
 	// new one for the next DJ, so the station plays its own programming
 	// for a moment in between. "keep" hands the same connection to the
 	// next DJ, so the station hears one continuous source. Nothing is
-	// re-encoded either way. "keep" needs `auth: local`.
+	// re-encoded either way.
 	StationConnection string `yaml:"station_connection"`
 	// ReadyAfter is how much audio a DJ must send before they can go on
 	// air. Default 3s.
@@ -181,19 +208,19 @@ func (c *Config) defaults() {
 	}
 	def(&c.Listen.Ingest, ":8000")
 	def(&c.Listen.Dashboard, ":8080")
-	if c.Mode() == "streamlover" {
-		// DJs sign in with stream keys from StreamLover, and the titles
-		// can name the show.
-		def(&c.Auth, "local")
-		def(&c.Metadata.Fallback, "{show} with {dj}")
-		def(&c.Streamlover.Visibility, "private")
-		def(&c.Handoff.Policy, "auto")
-		if c.Streamlover.SyncInterval == 0 {
-			c.Streamlover.SyncInterval = time.Minute
+	if sl := c.Provider.Streamlover; sl != nil {
+		def(&sl.Visibility, "private")
+		if sl.SyncInterval == 0 {
+			sl.SyncInterval = time.Minute
 		}
 	}
-	def(&c.Auth, "forward")
-	def(&c.Handoff.Overrun, "none")
+	if c.Provider.Scheduled() {
+		// With a schedule the titles can name the show, and the air
+		// passes to whoever the programme says.
+		def(&c.Metadata.Fallback, "{show} with {dj}")
+		def(&c.Handoff.Policy, "auto")
+		def(&c.Handoff.Overrun, "none")
+	}
 	def(&c.Handoff.Policy, "manual")
 	def(&c.Handoff.StationConnection, "reopen")
 	def(&c.Metadata.Fallback, "{dj}")
@@ -210,23 +237,29 @@ func (c *Config) validate() error {
 	if c.Upstream.URL == "" {
 		bad("upstream.url is required")
 	}
-	switch c.Auth {
-	case "forward":
-		if len(c.DJs) > 0 {
-			bad("djs are listed but auth is \"forward\"; set auth: local to use stream keys")
+	if c.Upstream.Username == "" || c.Upstream.Password == "" {
+		bad("upstream.username and upstream.password are required; they are the account Icegator streams to the station as")
+	}
+	switch p := c.Provider; {
+	case p.Static != nil && p.Streamlover != nil:
+		bad("provider has both static and streamlover; it must have exactly one")
+	case p.Static != nil:
+		if len(p.Static.DJs) == 0 {
+			bad("provider.static.djs lists no DJs")
 		}
-		if c.Upstream.Username != "" || c.Upstream.Password != "" {
-			bad("upstream.username/password are set but auth is \"forward\", which uses each DJ's own login; remove them or set auth: local")
+	case p.Streamlover != nil:
+		sl := p.Streamlover
+		if sl.URL == "" || sl.Station == "" || sl.APIKey == "" {
+			bad("provider.streamlover needs url, station and api_key")
 		}
-	case "local":
-		if len(c.DJs) == 0 && c.Mode() != "streamlover" {
-			bad("auth is \"local\" but no djs are listed")
+		if sl.URL != "" && !strings.HasPrefix(sl.URL, "http://") && !strings.HasPrefix(sl.URL, "https://") {
+			bad("provider.streamlover.url must start with https:// or http://")
 		}
-		if c.Upstream.Username == "" || c.Upstream.Password == "" {
-			bad("auth is \"local\", so upstream.username and upstream.password are required")
+		if v := sl.Visibility; v != "private" && v != "public" {
+			bad("provider.streamlover.visibility must be \"private\" or \"public\", not %q", v)
 		}
 	default:
-		bad("auth must be \"forward\" or \"local\", not %q", c.Auth)
+		bad("provider is required; set provider.static or provider.streamlover")
 	}
 	seen := map[string]bool{}
 	for _, op := range c.Operators {
@@ -243,38 +276,16 @@ func (c *Config) validate() error {
 	if l := c.Levels; l.SilentDBFS > 0 || l.LowDBFS > 0 || l.HighDBFS > 0 {
 		bad("levels thresholds are dBFS values and must be negative")
 	}
-	switch c.Handoff.StationConnection {
-	case "reopen":
-	case "keep":
-		if c.Auth == "forward" {
-			bad("handoff.station_connection is \"keep\", which needs auth: local; with auth: forward each DJ connects to the station as themselves")
-		}
-	default:
-		bad("handoff.station_connection must be \"reopen\" or \"keep\", not %q", c.Handoff.StationConnection)
+	if sc := c.Handoff.StationConnection; sc != "reopen" && sc != "keep" {
+		bad("handoff.station_connection must be \"reopen\" or \"keep\", not %q", sc)
 	}
-	if c.Mode() == "streamlover" {
-		sl := c.Streamlover
-		if sl.Station == "" || sl.APIKey == "" {
-			bad("streamlover.url is set, so streamlover.station and streamlover.api_key are required")
-		}
-		if !strings.HasPrefix(sl.URL, "http://") && !strings.HasPrefix(sl.URL, "https://") {
-			bad("streamlover.url must start with https:// or http://")
-		}
-		if c.Auth != "local" {
-			bad("with streamlover, DJs sign in with stream keys, so auth must be \"local\" or left out")
-		}
-		if len(c.DJs) > 0 {
-			bad("with streamlover, the DJs come from StreamLover; remove the djs list")
-		}
-	}
-	if _, _, err := c.Handoff.OverrunLimit(); err != nil {
+	if !c.Provider.Scheduled() && c.Provider.Name() != "" && c.Handoff.Overrun != "" {
+		bad("handoff.overrun is set, but the %s provider has no schedule for a DJ to overrun", c.Provider.Name())
+	} else if _, _, err := c.Handoff.OverrunLimit(); err != nil {
 		bad("handoff.overrun must be \"none\", \"strict\" or a duration such as 60s or 10m, not %q", c.Handoff.Overrun)
 	}
 	if p := c.Handoff.Policy; p != "auto" && p != "manual" {
 		bad("handoff.policy must be \"auto\" or \"manual\", not %q", p)
-	}
-	if v := c.Streamlover.Visibility; c.Mode() == "streamlover" && v != "private" && v != "public" {
-		bad("streamlover.visibility must be \"private\" or \"public\", not %q", v)
 	}
 	return errors.Join(errs...)
 }
@@ -287,15 +298,6 @@ func (c *Config) FallbackTitle(djName, showName string) string {
 		return djName
 	}
 	return strings.NewReplacer("{dj}", djName, "{show}", showName).Replace(c.Metadata.Fallback)
-}
-
-// Mode is "streamlover" when the station's DJs and schedule come from a
-// StreamLover station, and "standalone" otherwise.
-func (c *Config) Mode() string {
-	if c.Streamlover.URL != "" {
-		return "streamlover"
-	}
-	return "standalone"
 }
 
 // OverrunLimit decodes the overrun setting. unlimited means there is no

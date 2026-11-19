@@ -102,13 +102,11 @@ func run(configPath, envFile string, log *slog.Logger) error {
 	defer stop()
 
 	var authn auth.Authenticator
-	var ctl *controller.Controller
 	var reporter *streamlover.Reporter
-	switch {
-	case cfg.Mode() == "streamlover":
+	switch sl := cfg.Provider.Streamlover; cfg.Provider.Name() {
+	case "streamlover":
 		// The station's DJs and schedule come from StreamLover, and what
 		// goes to air is reported back to it.
-		sl := cfg.Streamlover
 		client := streamlover.NewClient(sl.URL, sl.Station, sl.APIKey)
 		station := streamlover.NewStation(client, filepath.Join(cfg.StateDir, "streamlover-station.json"), log)
 		first, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -130,29 +128,21 @@ func run(configPath, envFile string, log *slog.Logger) error {
 		opt.Overrun = controller.Overrun{Unlimited: unlimited, Limit: limit}
 
 		reporter = streamlover.NewReporter(client, filepath.Join(cfg.StateDir, "streamlover-turns.json"), log)
-		reporter.Visibility = cfg.Streamlover.Visibility
+		reporter.Visibility = sl.Visibility
 		opt.OnEvent = reporter.OnEvent
 		go reporter.Run(ctx)
-	case cfg.Auth == "local":
-		djs := make([]auth.DJ, len(cfg.DJs))
-		for i, d := range cfg.DJs {
+	case "static":
+		// The DJs are listed in the config, and queue for the air.
+		listed := cfg.Provider.Static.DJs
+		djs := make([]auth.DJ, len(listed))
+		for i, d := range listed {
 			djs[i] = auth.DJ{Slug: d.Slug, Name: d.Name, Key: d.Key}
 		}
 		if authn, err = auth.NewLocal(djs); err != nil {
 			return err
 		}
-	case cfg.Auth == "forward":
-		known, err := auth.OpenKnown(filepath.Join(cfg.StateDir, "known-credentials.json"))
-		if err != nil {
-			return err
-		}
-		f := auth.NewForward(up, known)
-		f.CurrentTitle = func() (string, bool) { return ctl.OnAirTitle() }
-		f.Unverified = func(ip string) (int, int) { return ctl.Unverified(ip) }
-		opt.OnAccepted, opt.OnRejected = f.Confirm, f.Reject
-		authn = f
 	}
-	if reporter != nil && cfg.Streamlover.UploadRecordings {
+	if reporter != nil && cfg.Provider.Streamlover.UploadRecordings {
 		// Each turn on air with a show is recorded to disk, uploaded
 		// through StreamLover when the turn ends, and then deleted here.
 		rec, err := recorder.New(recorder.Options{
@@ -173,7 +163,7 @@ func run(configPath, envFile string, log *slog.Logger) error {
 	}
 
 	dash := &api.Server{
-		Info:      api.Info{Station: cfg.Station.Name, Mode: cfg.Mode(), Auth: cfg.Auth, Policy: cfg.Handoff.Policy, Overrun: cfg.Handoff.Overrun},
+		Info:      api.Info{Station: cfg.Station.Name, Provider: cfg.Provider.Name(), Scheduled: cfg.Provider.Scheduled(), Policy: cfg.Handoff.Policy, Overrun: cfg.Handoff.Overrun},
 		Operators: map[string]string{},
 		Web:       web.App(),
 		Log:       log,
@@ -182,7 +172,7 @@ func run(configPath, envFile string, log *slog.Logger) error {
 		dash.Operators[op.Username] = op.PasswordHash
 	}
 	opt.OnChange = dash.Changed
-	ctl = controller.New(opt)
+	ctl := controller.New(opt)
 	dash.Gate = ctl
 	go ctl.Run(ctx)
 
@@ -190,8 +180,8 @@ func run(configPath, envFile string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("icegator started", "mode", cfg.Mode(), "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
-		"auth", cfg.Auth, "policy", cfg.Handoff.Policy,
+	log.Info("icegator started", "provider", cfg.Provider.Name(), "ingest", ln.Addr().String(), "upstream", cfg.Upstream.URL,
+		"policy", cfg.Handoff.Policy,
 		"station_connection", cfg.Handoff.StationConnection)
 
 	thresholds := levels.Thresholds{Silent: cfg.Levels.SilentDBFS, Low: cfg.Levels.LowDBFS, High: cfg.Levels.HighDBFS}

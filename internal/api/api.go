@@ -36,9 +36,11 @@ type Gate interface {
 // Info is static description shown in the dashboard.
 type Info struct {
 	Station string `json:"station"`
-	Mode    string `json:"mode"`   // "standalone" or "streamlover"
-	Auth    string `json:"auth"`   // "forward" or "local"
-	Policy  string `json:"policy"` // "auto" or "manual"
+	// Provider is where the DJs come from, "static" or "streamlover".
+	Provider string `json:"provider"`
+	// Scheduled reports whether the provider supplies a schedule.
+	Scheduled bool   `json:"scheduled"`
+	Policy    string `json:"policy"` // "auto" or "manual"
 	// Overrun is "none", "strict" or a duration. It applies when there is
 	// a schedule.
 	Overrun string `json:"overrun,omitempty"`

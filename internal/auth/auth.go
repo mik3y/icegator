@@ -1,13 +1,8 @@
 // Package auth decides whether a connecting DJ is let in, and who they are.
 //
-// The `auth` setting chooses between two ways of doing that.
-//
-// Under "local", Icegator holds a list of DJs and their stream keys and
-// checks them itself. The station sees one shared Icegator account.
-//
-// Under "forward", Icegator holds no DJ list. Whatever the DJ sends is
-// presented to the station when they go on air, so the station does the
-// checking.
+// Icegator holds the DJs and their stream keys, from its own config or
+// from a provider such as StreamLover, and checks them itself. The station
+// sees one account, which is Icegator's.
 package auth
 
 import (

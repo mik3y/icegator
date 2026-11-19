@@ -320,14 +320,6 @@ button.quiet:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
-.flag {
-  display: inline-block;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--warm);
-  margin-left: 0.5rem;
-}
-
 @media (max-width: 40rem) {
   .row {
     grid-template-columns: 2ch 1fr;

@@ -141,7 +141,7 @@ function OnAir({
 }
 
 function NobodyOnAir({ status }: { status: Status }) {
-  const scheduled = status.info.mode === "streamlover";
+  const scheduled = status.info.scheduled;
   let detail: string;
   if (!scheduled) {
     detail =
@@ -224,7 +224,7 @@ function Row({
   airLabel: string;
   act: Act;
 }) {
-  const scheduled = status.info.mode === "streamlover";
+  const scheduled = status.info.scheduled;
   const connecting = dj.state === "connecting";
   // Putting a DJ on air against the schedule can name one of their shows,
   // which is what gets it recorded and logged.
@@ -238,14 +238,6 @@ function Row({
       <span className="place">{place ?? ""}</span>
       <div>
         <span className="name">{dj.name}</span>
-        {!dj.verified && (
-          <span
-            className="flag"
-            title="The station has not confirmed this login yet."
-          >
-            Login not confirmed
-          </span>
-        )}
         <p className="small soft">{detail}</p>
       </div>
       <div className="level">
@@ -326,7 +318,7 @@ export default function Console({
     );
   }
 
-  const scheduled = status.info.mode === "streamlover";
+  const scheduled = status.info.scheduled;
   const onAir = status.djs.find((d) => d.state === "on_air");
   const waiting = status.djs.filter(
     (d) => d.state === "queued" || d.state === "connecting",

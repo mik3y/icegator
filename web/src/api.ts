@@ -15,7 +15,6 @@ export interface Dj {
   username: string;
   name: string;
   state: DjState;
-  verified: boolean;
   remote: string;
   user_agent: string;
   connected_at: string;
@@ -51,8 +50,10 @@ export interface Slot {
 
 export interface Info {
   station: string;
-  mode: "standalone" | "streamlover";
-  auth: "forward" | "local";
+  /** Where the DJs come from. */
+  provider: "static" | "streamlover";
+  /** Whether the provider supplies a schedule. */
+  scheduled: boolean;
   /** Whether a DJ with a claim to the air takes it without an operator. */
   policy: "auto" | "manual";
   /** With a schedule, "none", "strict" or a duration such as "10m". */

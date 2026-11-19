@@ -34,7 +34,7 @@ DJs point their streaming software at the `listen.ingest` address as an Icecast 
 
 Icegator is configured by one YAML file, given with `-config` (default `icegator.yaml`). [`icegator.example.yaml`](icegator.example.yaml) is a commented starting point. A key Icegator does not recognise is an error, so a typo is caught at startup and not silently ignored.
 
-Only `upstream.url` is required. Everything else has a default.
+The `upstream` and `provider` blocks are required. Everything else has a default.
 
 ### Environment variables and `.env` files
 
@@ -72,28 +72,40 @@ upstream:
 
 ### `upstream`
 
-Where Icegator sends the audio of whoever is on air.
+Where Icegator sends the audio of whoever is on air. Icegator always streams to the station as this one account, so the station needs no account for each DJ.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `url` | required | The station's source address, including the mount, such as `http://azuracast.example.com:8005/`. Use `https://` for a TLS source port. |
-| `username` | empty | The account Icegator streams as. Required with `auth: local` and with `streamlover`. Must be left out with `auth: forward`. |
-| `password` | empty | That account's password. |
+| `username` | required | The account Icegator streams as. |
+| `password` | required | That account's password. |
 
-### `auth`
+### `provider`
 
-How a DJ's login is checked. One value, not a block.
+Where the station's DJs come from. This block is required and holds exactly one provider, named by the key inside it. The provider decides how Icegator runs, so nothing else in the file chooses a mode.
 
-| Value | Meaning |
+| Provider | DJs and stream keys | Schedule |
+| --- | --- | --- |
+| `static` | Listed in this file. | None. DJs queue for the air in the order they connect. |
+| `streamlover` | From a StreamLover station. | From StreamLover. A DJ goes on air when a show they host is scheduled. |
+
+```yaml
+provider:
+  streamlover:
+    url: https://streamlover.app
+    station: example-radio
+    api_key: ${STREAMLOVER_API_KEY}
+```
+
+Whichever is used, a DJ signs in to Icegator with their username and stream key.
+
+#### `provider.static`
+
+| Option | Meaning |
 | --- | --- |
-| `forward` | The default. DJs sign in with their own account on the upstream station, and Icegator passes it on. No list of DJs is needed, and the station still sees who is live. |
-| `local` | DJs sign in with a stream key that Icegator checks itself, and Icegator streams as the single `upstream` account. The keys come from `djs`, or from StreamLover when `streamlover` is set. |
+| `djs` | The DJs, as a list. At least one is required. |
 
-With `streamlover` set, `auth` is `local` and can be left out.
-
-### `djs`
-
-The DJs and their stream keys, for `auth: local` without StreamLover. A list, where each entry has:
+Each entry in `djs` has:
 
 | Option | Meaning |
 | --- | --- |
@@ -101,13 +113,13 @@ The DJs and their stream keys, for `auth: local` without StreamLover. A list, wh
 | `name` | The name shown on the dashboard and used in titles. |
 | `key` | The DJ's stream key, at least 8 characters. `icegator -new-key` prints a new one. Case, hyphens and spaces are ignored when a DJ types it. Must be unique, because software that sends no username is matched on the key alone. |
 
-### `streamlover`
+#### `provider.streamlover`
 
-Follow a StreamLover station. Its DJs sign in with the stream keys StreamLover gives them, go on air when a show they host is scheduled, and what airs is logged back to StreamLover. Setting `url` turns this on. `djs` must then be left out.
+Follow a StreamLover station. Its DJs sign in with the stream keys StreamLover gives them, and what airs is logged back to StreamLover as broadcasts.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `url` | empty | Where StreamLover is, such as `https://streamlover.app`. |
+| `url` | required | Where StreamLover is, such as `https://streamlover.app`. |
 | `station` | required | The station's id or slug on StreamLover. |
 | `api_key` | required | A station API key, made in that station's settings on StreamLover. |
 | `sync_interval` | `1m` | How often the DJs, shows and schedule are re-read. |
@@ -120,16 +132,16 @@ How the air passes from one DJ to the next.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `policy` | `manual`, or `auto` with `streamlover` | What happens when a DJ with a claim to the air is ready while another DJ is on it. Without a schedule that is any DJ who connects, and with one it is the DJ whose show is now on. `auto` puts them on air as soon as their audio is flowing. `manual` waits for an operator to hand off, or, without a schedule, for the DJ on air to disconnect. |
-| `overrun` | `none` | With a schedule, how long a DJ may stay on air past the end of their show when the next show's DJ is not ready, or nothing is scheduled next. `none` sets no limit. `strict` takes the DJ off as their show ends. A duration such as `60s` or `10m` allows that much. A scheduled DJ who is ready takes over whatever this says. |
-| `station_connection` | `reopen` | What happens to the connection to the station at a handoff. `reopen` closes it and opens a new one for the next DJ, so the station plays its own programming for a moment in between. `keep` hands the same connection to the next DJ, so the station hears one continuous source. Nothing is re-encoded either way. `keep` needs `auth: local`. |
+| `policy` | `manual`, or `auto` with a schedule | What happens when a DJ with a claim to the air is ready while another DJ is on it. Without a schedule that is any DJ who connects, and with one it is the DJ whose show is now on. `auto` puts them on air as soon as their audio is flowing. `manual` waits for an operator to hand off, or, without a schedule, for the DJ on air to disconnect. |
+| `overrun` | `none` | Only for a provider with a schedule, and an error otherwise. How long a DJ may stay on air past the end of their show when the next show's DJ is not ready, or nothing is scheduled next. `none` sets no limit. `strict` takes the DJ off as their show ends. A duration such as `60s` or `10m` allows that much. A scheduled DJ who is ready takes over whatever this says. |
+| `station_connection` | `reopen` | What happens to the connection to the station at a handoff. `reopen` closes it and opens a new one for the next DJ, so the station plays its own programming for a moment in between. `keep` hands the same connection to the next DJ, so the station hears one continuous source. Nothing is re-encoded either way. |
 | `ready_after` | `3s` | How much audio a DJ must send before they can go on air. |
 
 ### `metadata`
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `fallback` | `{dj}`, or `{show} with {dj}` with `streamlover` | The title sent to the station when the DJ's software has sent none. `{dj}` is replaced by the DJ's name and `{show}` by the show's. |
+| `fallback` | `{dj}`, or `{show} with {dj}` with a schedule | The title sent to the station when the DJ's software has sent none. `{dj}` is replaced by the DJ's name and `{show}` by the show's. |
 
 Titles the DJ's software does send are passed on as they are.
 
@@ -154,7 +166,7 @@ The loudness, in dBFS averaged over a few seconds, behind the dashboard's verdic
 
 ### `state_dir`
 
-One value, not a block. The directory for what has to survive a restart, which is recordings waiting to be uploaded to StreamLover, the logins the station has accepted (`auth: forward`), and the last copy of the station's DJs and schedule (`streamlover`). Default `state`, relative to where Icegator is started.
+One value, not a block. The directory for what has to survive a restart, which with the `streamlover` provider is recordings waiting to be uploaded and the last copy of the station's DJs and schedule. Default `state`, relative to where Icegator is started.
 
 ## Developing
 

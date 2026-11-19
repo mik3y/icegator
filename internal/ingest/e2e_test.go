@@ -3,10 +3,8 @@ package ingest_test
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,10 +34,8 @@ type rig struct {
 }
 
 type rigOpt struct {
-	forward bool
-	checker auth.Checker // overrides the real station check
-	keep    bool         // hand the station connection from DJ to DJ
-	record  func(controller.Turn) (controller.Recording, error)
+	keep   bool // hand the station connection from DJ to DJ
+	record func(controller.Turn) (controller.Recording, error)
 
 	// Setting schedule switches the controller to following a programme.
 	schedule schedule.Source
@@ -49,7 +45,7 @@ type rigOpt struct {
 	onEvent  func(controller.Event)
 }
 
-var stationAccounts = map[string]string{"icegator": "shared-pw", "alice": "alice-pw", "bob": "bob-pw"}
+var stationAccounts = map[string]string{"icegator": "shared-pw"}
 
 func newRig(t *testing.T, o rigOpt) *rig {
 	t.Helper()
@@ -79,30 +75,15 @@ func newRig(t *testing.T, o rigOpt) *rig {
 			return t.Show.Name + " with " + t.DJ.DisplayName()
 		}
 	}
-	var a auth.Authenticator
-	var ctl *controller.Controller
-	if o.forward {
-		known, _ := auth.OpenKnown("")
-		var checker auth.Checker = up
-		if o.checker != nil {
-			checker = o.checker
-		}
-		f := auth.NewForward(checker, known)
-		f.CurrentTitle = func() (string, bool) { return ctl.OnAirTitle() }
-		f.Unverified = func(ip string) (int, int) { return ctl.Unverified(ip) }
-		opt.OnAccepted, opt.OnRejected = f.Confirm, f.Reject
-		a = f
-	} else {
-		a, err = auth.NewLocal([]auth.DJ{
-			{Slug: "alice", Name: "Alice", Key: "AAAA-2222"},
-			{Slug: "bob", Name: "Bob", Key: "BBBB-3333"},
-			{Slug: "carol", Name: "Carol", Key: "CCCC-4444"},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
+	a, err := auth.NewLocal([]auth.DJ{
+		{Slug: "alice", Name: "Alice", Key: "AAAA-2222"},
+		{Slug: "bob", Name: "Bob", Key: "BBBB-3333"},
+		{Slug: "carol", Name: "Carol", Key: "CCCC-4444"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	ctl = controller.New(opt)
+	ctl := controller.New(opt)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -471,107 +452,6 @@ func TestStationDropReconnects(t *testing.T) {
 	r.station.Kick()
 	r.waitLive(2)
 	r.waitState("alice", controller.StateOnAir)
-}
-
-func TestForwardedCredentials(t *testing.T) {
-	r := newRig(t, rigOpt{forward: true})
-
-	// A wrong password is refused at the door, not at air time.
-	if d := r.put("alice", "not-her-password"); !strings.Contains(d.status, "401") {
-		t.Fatalf("bad password: %q", d.status)
-	}
-	if len(r.station.Sources()) != 0 {
-		t.Fatal("checking credentials opened a source connection")
-	}
-
-	alice := r.put("alice", "alice-pw")
-	r.waitState("alice", controller.StateOnAir)
-	src := r.waitLive(1)
-	if src.Username != "alice" {
-		t.Fatalf("station saw %q, want alice's own account", src.Username)
-	}
-	r.waitTitle(upstreamtest.Title{Username: "alice", Song: "alice"})
-	r.title("alice", "alice-pw", "Song One")
-	r.waitTitle(upstreamtest.Title{Username: "alice", Song: "Song One"})
-
-	// Bob connects while alice is live. Checking him re-sends the title
-	// that is already showing, so listeners see no change.
-	bob := r.put("source", "bob:bob-pw")
-	r.waitState("bob", controller.StateQueued)
-	for _, title := range r.station.Titles() {
-		if title.Song != "alice" && title.Song != "Song One" {
-			t.Fatalf("credential check leaked a title: %+v", r.station.Titles())
-		}
-	}
-	if st := r.ctl.Status(); !st.DJs[1].Verified {
-		t.Fatal("bob should be verified")
-	}
-
-	// Another DJ's password does not let you set their title.
-	if s := r.title("alice", "bob-pw", "Hijack"); strings.Contains(s, "200") {
-		t.Fatalf("title with wrong password: %s", s)
-	}
-
-	alice.hangUp()
-	src2 := r.waitLive(2)
-	if src2.Username != "bob" {
-		t.Fatalf("station saw %q, want bob", src2.Username)
-	}
-	bob.hangUp()
-}
-
-// unreachable is a credential check that can never reach the station.
-type unreachable struct{}
-
-func (unreachable) Check(context.Context, upstream.Credentials, string) (bool, error) {
-	return false, errors.New("station unreachable")
-}
-
-func TestForwardUnverified(t *testing.T) {
-	r := newRig(t, rigOpt{forward: true, checker: unreachable{}})
-
-	// Unchecked DJs are admitted as unverified, up to the per-address cap.
-	mallory := r.put("mallory", "guess")
-	// Nobody better is waiting, so she is put on air; the station refuses
-	// her and she is disconnected.
-	<-mallory.done
-	r.waitFor("mallory to be dropped", func() bool { return len(r.states()) == 0 })
-	if len(r.station.Sources()) != 0 {
-		t.Fatal("station accepted a bad login")
-	}
-
-	// Alice (unverified, but genuine) gets on; that verifies her.
-	alice := r.put("alice", "alice-pw")
-	r.waitLive(1)
-	r.waitFor("alice verified", func() bool { return r.ctl.Status().DJs[0].Verified })
-
-	// Two more unverified from this address are allowed, a third is not.
-	r.put("x1", "pw")
-	r.put("x2", "pw")
-	r.waitState("x2", controller.StateQueued)
-	if d := r.put("x3", "pw"); !strings.Contains(d.status, "403") {
-		t.Fatalf("over the cap: %q", d.status)
-	}
-
-	// When alice leaves, the unverified DJs each get their turn and are
-	// each refused by the station.
-	alice.hangUp()
-	r.waitFor("x1 and x2 to be dropped", func() bool { return len(r.states()) == 0 })
-	if n := len(r.station.Sources()); n != 1 {
-		t.Fatalf("station accepted %d sources, want 1", n)
-	}
-
-	// Alice is remembered as good despite the outage, so she is admitted
-	// as verified even with the cap reached.
-	r.put("y1", "pw")
-	r.put("y2", "pw")
-	r.put("alice", "alice-pw")
-	r.waitFor("alice back on air", func() bool { return r.states()["alice"] == controller.StateOnAir })
-	for _, d := range r.ctl.Status().DJs {
-		if d.Username == "alice" && !d.Verified {
-			t.Fatal("alice should be remembered as verified")
-		}
-	}
 }
 
 // tape is an in-memory recording.
