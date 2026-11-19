@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "vite",
+    "sim": "vite --mode sim",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/",

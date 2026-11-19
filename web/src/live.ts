@@ -46,6 +46,23 @@ export function useLive(): { status: Status | null; connection: Connection } {
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
+    if (import.meta.env.MODE === "sim") {
+      // No server. A simulated station feeds the page instead.
+      let stop: (() => void) | undefined;
+      let gone = false;
+      import("./sim/sim").then((sim) => {
+        if (gone) return;
+        stop = sim.connect({
+          status: setStatus,
+          levels: setLevels,
+          connection: setConnection,
+        });
+      });
+      return () => {
+        gone = true;
+        stop?.();
+      };
+    }
     const source = new EventSource("/api/events");
     source.onopen = () => setConnection("open");
     source.addEventListener("status", (e) => {

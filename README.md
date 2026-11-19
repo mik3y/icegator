@@ -175,6 +175,9 @@ make test                             # go vet, go test, typecheck, lint
 make dev-station                      # a fake station on 127.0.0.1:8005, so nothing goes on air
 bin/icesource -addr 127.0.0.1:8000 -user alice -pass AAAA-2222 -file some.mp3
 cd web && bun start                   # dashboard with hot reload, proxying to a running icegator
+cd web && bun run sim                 # dashboard alone, against a simulated station
 ```
+
+`bun run sim` needs no Icegator and no streams. The dashboard runs against a station simulated in the browser, and a toolbar at the bottom of the page connects and drops DJs, sets their levels, and switches between states that are awkward to produce for real, such as a lost station connection or a show overrunning. The simulator is not part of the built dashboard.
 
 `icesource` is a small source client that streams an MP3 in real time and can send title updates, standing in for DJ software.

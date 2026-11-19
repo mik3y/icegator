@@ -123,7 +123,7 @@ async function call<T>(
   return data as T;
 }
 
-export const api = {
+const real = {
   me: () => call<{ username: string; info: Info }>("GET", "/api/me"),
   login: (username: string, password: string) =>
     call<{ username: string }>("POST", "/api/login", { username, password }),
@@ -138,3 +138,23 @@ export const api = {
   pull: (id: string) => call("POST", `/api/sessions/${id}/pull`),
   kick: (id: string) => call("POST", `/api/sessions/${id}/kick`),
 };
+
+type Api = typeof real;
+
+// In sim mode (`bun run sim`) the calls go to a station simulated in the
+// browser. The comparison is spelled out here, and not shared, so that the
+// real build can see it is false and leave the simulator out.
+const simulated = (): Api =>
+  Object.fromEntries(
+    Object.keys(real).map((name) => [
+      name,
+      async (...args: unknown[]) => {
+        const sim = await import("./sim/sim");
+        return (sim.api as Record<string, (...a: unknown[]) => unknown>)[name](
+          ...args,
+        );
+      },
+    ]),
+  ) as unknown as Api;
+
+export const api: Api = import.meta.env.MODE === "sim" ? simulated() : real;
